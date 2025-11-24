@@ -1,0 +1,16 @@
+# Entorno de Python
+env/
+venv/
+*.pyc
+__pycache__/
+
+# Base de datos y datos locales
+../data/*.db
+../data/*.sqlite
+../data/*.sqlite3
+
+# VS Code
+.vscode/
+
+# Archivos temporales
+*.log
