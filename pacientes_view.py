@@ -72,6 +72,17 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         hint_text="Ej: 21-04-1993",
     )
 
+     # Campo de edad solo lectura No se guarda en BD
+    edad = ft.TextField(
+        label="Edad",
+        width=80,
+        read_only=True,
+        filled=True,
+        bgcolor=ft.Colors.GREY_300,
+        text_style=ft.TextStyle(color=ft.Colors.BLACK87),
+        value="-",
+    )
+
     sexo = ft.Dropdown(
         label="Sexo",
         width=150,
@@ -428,6 +439,7 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         observaciones.value = ""
         antecedente_medico_form.value = ""
         antecedente_psico_form.value = ""
+        edad.value = ""
 
         # limpiar errores visuales de campos obligatorios
         for campo in (documento, tipo_documento, nombre_completo, fecha_nacimiento, email):
@@ -611,6 +623,7 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         tipo_documento.value = p["tipo_documento"]
         nombre_completo.value = p["nombre_completo"]
         fecha_nacimiento.value = p["fecha_nacimiento"]
+        edad.value = calcular_edad_desde_fecha(p["fecha_nacimiento"])
         sexo.value = p.get("sexo") or "sexo_default"
         estado_civil.value = p.get("estado_civil") or "estado_default"
         escolaridad.value = p.get("escolaridad") or ""
@@ -964,6 +977,9 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
     def on_fecha_change(e):
         marcar_formulario_sucio(e)
         formatear_fecha_nacimiento(e)
+        # Después de formatear, intentar calcular edad
+        edad.value = calcular_edad_desde_fecha(fecha_nacimiento.value or "")
+        page.update()
 
     fecha_nacimiento.on_change = on_fecha_change
 
@@ -982,6 +998,30 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         on_click=abrir_dialogo_cancelar,
     )
 
+    #FUNCION CALCULAR EDAD
+
+    def calcular_edad_desde_fecha(fecha_str: str) -> str:
+        """
+        Recibe fecha en formato DD-MM-YYYY y devuelve edad (años) como string.
+        Si la fecha es inválida, devuelve "".
+        """
+        if not fecha_str:
+            return ""
+
+        try:
+            fecha = datetime.strptime(fecha_str, "%d-%m-%Y").date()
+        except ValueError:
+            return ""
+
+        hoy = datetime.today().date()
+        años = hoy.year - fecha.year - (
+            (hoy.month, hoy.day) < (fecha.month, fecha.day)
+        )
+        if años < 0:
+            return ""
+        return str(años)
+
+
     # ------------------------------------------------------------------
     # LAYOUT (FORMULARIO + LISTADO + ANTECEDENTES)
     # ------------------------------------------------------------------
@@ -997,8 +1037,9 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
                 [
                     ft.Text("Registro de paciente", size=20, weight="bold"),
                     ft.Row([documento, tipo_documento, nombre_completo], wrap=True),
-                    ft.Row([fecha_nacimiento, sexo, estado_civil], wrap=True),
-                    ft.Row([escolaridad, eps_col], wrap=True),
+                    ft.Row([fecha_nacimiento, edad, sexo, estado_civil], wrap=True),
+                    ft.Row([escolaridad, eps], wrap=True),  # o eps_stack o eps_col si luego lo volvíamos a usar
+
                     ft.Row([direccion], wrap=True),
                     ft.Row([email, telefono], wrap=True),
                     ft.Row(
@@ -1034,12 +1075,20 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
                         alignment="spaceBetween",
                         wrap=True,
                     ),
-                    tabla_pacientes,
+                    # Contenedor con altura fija + scroll interno
+                    ft.Container(
+                        height=250,  # ajusta este valor si quieres más / menos alto
+                        content=ft.Column(
+                            [tabla_pacientes],
+                            scroll=ft.ScrollMode.AUTO,
+                        ),
+                    ),
                 ],
                 spacing=10,
             ),
         )
     )
+
 
     # Sección: Historial de antecedentes (lado derecho)
     antecedentes_panel = ft.Card(
@@ -1049,14 +1098,27 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
                 [
                     etiqueta_paciente_antecedentes,
                     ft.Text("Antecedentes médicos:", weight="bold"),
-                    antecedentes_medicos_table,
+                    ft.Container(
+                        height=150,  # altura fija para médicos
+                        content=ft.Column(
+                            [antecedentes_medicos_table],
+                            scroll=ft.ScrollMode.AUTO,
+                        ),
+                    ),
                     ft.Text("Antecedentes psicológicos:", weight="bold"),
-                    antecedentes_psico_table,
+                    ft.Container(
+                        height=150,  # altura fija para psicológicos
+                        content=ft.Column(
+                            [antecedentes_psico_table],
+                            scroll=ft.ScrollMode.AUTO,
+                        ),
+                    ),
                 ],
                 spacing=10,
             ),
         )
     )
+
 
     # ------------------------------------------------------------------
     # INICIALIZACIÓN DE LA VISTA
