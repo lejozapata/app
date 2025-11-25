@@ -24,6 +24,20 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
     """
 
     # ------------------------------------------------------------------
+    # ESTADO GENERAL
+    # ------------------------------------------------------------------
+
+    # Cache en memoria para filtrar sin ir siempre a la BD
+    pacientes_cache = []
+
+    # Estado de edición de paciente
+    modo_edicion = False
+    documento_seleccionado = None
+
+    # True cuando hay cambios sin guardar en el formulario
+    form_dirty = False
+
+    # ------------------------------------------------------------------
     # CONTROLES DEL FORMULARIO DE PACIENTE
     # ------------------------------------------------------------------
 
@@ -185,13 +199,6 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         width=400,
     )
 
-    # Cache en memoria para filtrar sin ir siempre a la BD
-    pacientes_cache = []
-
-    # Estado de edición de paciente
-    modo_edicion = False
-    documento_seleccionado = None
-
     # ------------------------------------------------------------------
     # FUNCIONES AUXILIARES GENERALES
     # ------------------------------------------------------------------
@@ -213,6 +220,11 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         tipo_documento.value = "tipo_default"
         sexo.value = "sexo_default"
         estado_civil.value = "estado_default"
+
+    def marcar_formulario_sucio(e=None):
+        """Marca que el formulario tiene cambios sin guardar."""
+        nonlocal form_dirty
+        form_dirty = True
 
     # ------------------------------------------------------------------
     # FUNCIONES AUXILIARES: ANTECEDENTES
@@ -262,7 +274,7 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         Limpia el formulario de paciente y sale de modo edición.
         También resetea el panel de antecedentes (texto + tablas).
         """
-        nonlocal modo_edicion, documento_seleccionado
+        nonlocal modo_edicion, documento_seleccionado, form_dirty
 
         # TextFields
         documento.value = ""
@@ -285,10 +297,11 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         # Dropdowns
         reset_dropdowns_a_default()
 
-        # Salir de modo edición
+        # Salir de modo edición y marcar formulario limpio
         documento.disabled = False
         modo_edicion = False
         documento_seleccionado = None
+        form_dirty = False
 
         # Reset panel de antecedentes
         etiqueta_paciente_antecedentes.value = (
@@ -311,6 +324,8 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         eps.value = valor
         eps_sugerencias.visible = False
         eps_sugerencias.controls.clear()
+
+        marcar_formulario_sucio()
         page.update()
 
     def actualizar_sugerencias_eps(e=None):
@@ -382,11 +397,11 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
                 ].lower():
                     continue
 
-            # Documento como "link" para editar
+            # Documento como "link" para editar (con protección de cambios)
             doc_cell = ft.DataCell(
                 ft.TextButton(
                     text=p["documento"],
-                    on_click=lambda ev, doc=p["documento"]: cargar_paciente_en_formulario(
+                    on_click=lambda ev, doc=p["documento"]: intentar_cargar_paciente(
                         doc
                     ),
                 )
@@ -396,7 +411,7 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
                 [
                     ft.TextButton(
                         "Editar",
-                        on_click=lambda ev, doc=p["documento"]: cargar_paciente_en_formulario(
+                        on_click=lambda ev, doc=p["documento"]: intentar_cargar_paciente(
                             doc
                         ),
                     ),
@@ -436,7 +451,7 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         Carga los datos del paciente seleccionado en el formulario.
         También actualiza el panel de antecedentes para ese paciente.
         """
-        nonlocal modo_edicion, documento_seleccionado
+        nonlocal modo_edicion, documento_seleccionado, form_dirty
 
         fila = obtener_paciente(doc)
         if fila is None:
@@ -474,14 +489,55 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         documento_seleccionado = p["documento"]
         texto_contexto.value = f"Editando paciente: {p['nombre_completo']}"
 
-        # Actualizar panel de antecedentes
+        # Panel de antecedentes
         etiqueta_paciente_antecedentes.value = (
             f"Antecedentes de: {p['nombre_completo']} ({p['documento']})"
         )
         cargar_antecedentes(p["documento"])
         actualizar_sugerencias_eps()
 
+        # El formulario recién cargado se considera "limpio"
+        form_dirty = False
         page.update()
+
+    def intentar_cargar_paciente(doc: str):
+        """
+        Protege contra pérdida de datos:
+        - Si el formulario está limpio -> carga directamente.
+        - Si hay cambios sin guardar -> pide confirmación.
+        """
+        nonlocal form_dirty
+
+        if not form_dirty:
+            cargar_paciente_en_formulario(doc)
+            return
+
+        def on_cancel(e):
+            dialog.open = False
+            page.update()
+
+        def on_confirm(e):
+            nonlocal form_dirty
+            dialog.open = False
+            # descartamos cambios no guardados
+            form_dirty = False
+            page.update()
+            cargar_paciente_en_formulario(doc)
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Cambios sin guardar"),
+            content=ft.Text(
+                "Hay cambios sin guardar en el formulario.\n"
+                "Si continúas se perderán. ¿Deseas continuar?"
+            ),
+            actions=[
+                ft.TextButton("No", on_click=on_cancel),
+                ft.TextButton("Sí, continuar", on_click=on_confirm),
+            ],
+        )
+
+        page.open(dialog)
 
     def guardar_paciente_handler(e):
         """
@@ -489,44 +545,66 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         Además, si se diligencian antecedentes,
         se insertan en sus tablas correspondientes.
         """
-        nonlocal modo_edicion, documento_seleccionado
+        nonlocal modo_edicion, documento_seleccionado, form_dirty
+
+        # Reset de errores visuales
+        for campo in (documento, tipo_documento, nombre_completo, fecha_nacimiento, email):
+            campo.error_text = None
 
         mensaje_estado.value = ""
         mensaje_estado.color = "red"
-        email.error_text = None
 
-        obligatorios = [
-            (documento, "Documento"),
-            (tipo_documento, "Tipo documento"),
-            (nombre_completo, "Nombre completo"),
-            (fecha_nacimiento, "Fecha de nacimiento"),
-        ]
+        # ------------------------------------------------------
+        # 1) VALIDACIÓN DE CAMPOS OBLIGATORIOS
+        # ------------------------------------------------------
+        errores_obligatorios = False
 
-        for campo, nombre in obligatorios:
-            if not campo.value:
-                mensaje_estado.value = f"El campo '{nombre}' es obligatorio."
-                page.update()
-                return
+        if not (documento.value or "").strip():
+            documento.error_text = "Requerido"
+            errores_obligatorios = True
 
-        # Validación básica de formato de fecha + valor real
+        if not tipo_documento.value or tipo_documento.value == "tipo_default":
+            tipo_documento.error_text = "Requerido"
+            errores_obligatorios = True
+
+        if not (nombre_completo.value or "").strip():
+            nombre_completo.error_text = "Requerido"
+            errores_obligatorios = True
+
+        if not (fecha_nacimiento.value or "").strip():
+            fecha_nacimiento.error_text = "Requerido"
+            errores_obligatorios = True
+
+        if errores_obligatorios:
+            mensaje_estado.value = "Hay campos obligatorios sin llenar."
+            page.update()
+            return
+
+        # ------------------------------------------------------
+        # 2) VALIDACIÓN DE FORMATO DE FECHA Y EMAIL (SIMULTÁNEOS)
+        # ------------------------------------------------------
+        hay_errores = False
+
         fn = (fecha_nacimiento.value or "").strip()
         try:
             datetime.strptime(fn, "%d-%m-%Y")
         except ValueError:
-            mensaje_estado.value = (
-                "La fecha de nacimiento no es válida. Usa formato DD-MM-YYYY."
-            )
-            page.update()
-            return
+            fecha_nacimiento.error_text = "La fecha de nacimiento no es válida. Usa formato DD-MM-YYYY."
+            hay_errores = True
 
-        # Validación de email (inline en el campo)
         correo = (email.value or "").strip()
         if correo and not email_valido(correo):
             email.error_text = "Correo inválido, revisa el formato."
+            hay_errores = True
+
+        if hay_errores:
             mensaje_estado.value = "Hay errores en el formulario."
             page.update()
             return
 
+        # ------------------------------------------------------
+        # 3) SI TODO ESTÁ OK, CONSTRUIR OBJETO PACIENTE Y GUARDAR
+        # ------------------------------------------------------
         paciente = {
             "documento": documento.value.strip(),
             "tipo_documento": (tipo_documento.value or "").strip(),
@@ -574,6 +652,9 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         mensaje_estado.color = "green"
         mensaje_estado.value = texto_snack
 
+        # Formulario queda "limpio"
+        form_dirty = False
+
         # Refrescar tabla y mantener paciente cargado
         cargar_pacientes()
         cargar_paciente_en_formulario(doc)
@@ -586,7 +667,7 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
 
     def eliminar_paciente_action(doc: str):
         """Elimina un paciente y refresca la lista."""
-        nonlocal modo_edicion, documento_seleccionado
+        nonlocal modo_edicion, documento_seleccionado, form_dirty
 
         try:
             eliminar_paciente(doc)
@@ -599,6 +680,9 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         # Si estaba en edición, limpiamos el formulario
         if modo_edicion and documento_seleccionado == doc:
             limpiar_formulario()
+        else:
+            # Por si el formulario estaba cargado pero no en modo_edicion
+            form_dirty = False
 
         cargar_pacientes()
         mensaje_estado.value = f"Paciente {doc} eliminado correctamente."
@@ -690,12 +774,40 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         page.open(dialog)
 
     # ------------------------------------------------------------------
-    # WIRING DE EVENTOS
+    # WIRING DE EVENTOS (incluye tracking de cambios)
     # ------------------------------------------------------------------
 
     buscador.on_change = aplicar_filtro_tabla
-    eps.on_change = actualizar_sugerencias_eps
-    fecha_nacimiento.on_change = formatear_fecha_nacimiento
+
+    # Campos que marcan el formulario como "sucio"
+    documento.on_change = marcar_formulario_sucio
+    tipo_documento.on_change = marcar_formulario_sucio
+    nombre_completo.on_change = marcar_formulario_sucio
+    sexo.on_change = marcar_formulario_sucio
+    estado_civil.on_change = marcar_formulario_sucio
+    escolaridad.on_change = marcar_formulario_sucio
+    direccion.on_change = marcar_formulario_sucio
+    email.on_change = marcar_formulario_sucio
+    telefono.on_change = marcar_formulario_sucio
+    contacto_emergencia_nombre.on_change = marcar_formulario_sucio
+    contacto_emergencia_telefono.on_change = marcar_formulario_sucio
+    observaciones.on_change = marcar_formulario_sucio
+    antecedente_medico_form.on_change = marcar_formulario_sucio
+    antecedente_psico_form.on_change = marcar_formulario_sucio
+
+    # EPS: autocompletar + marcar sucio
+    def on_eps_change(e):
+        marcar_formulario_sucio(e)
+        actualizar_sugerencias_eps(e)
+
+    eps.on_change = on_eps_change
+
+    # Fecha: formatear + marcar sucio
+    def on_fecha_change(e):
+        marcar_formulario_sucio(e)
+        formatear_fecha_nacimiento(e)
+
+    fecha_nacimiento.on_change = on_fecha_change
 
     boton_guardar = ft.ElevatedButton(
         text="Guardar paciente",
