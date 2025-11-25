@@ -284,14 +284,19 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         eps.value = ""
         direccion.value = ""
         email.value = ""
-        email.error_text = None
         telefono.value = ""
         contacto_emergencia_nombre.value = ""
         contacto_emergencia_telefono.value = ""
         observaciones.value = ""
         antecedente_medico_form.value = ""
         antecedente_psico_form.value = ""
+
+        # limpiar errores visuales de campos obligatorios
+        for campo in (documento, tipo_documento, nombre_completo, fecha_nacimiento, email):
+            campo.error_text = None
+
         mensaje_estado.value = ""
+        mensaje_estado.color = "red"
         texto_contexto.value = ""
 
         # Dropdowns
@@ -314,6 +319,7 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         eps_sugerencias.controls.clear()
 
         page.update()
+
 
     # ------------------------------------------------------------------
     # FUNCIONES: AUTOCOMPLETE EPS
@@ -500,16 +506,29 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         form_dirty = False
         page.update()
 
+        # Funcion para cargar paciente con protección de pérdida de datos
     def intentar_cargar_paciente(doc: str):
         """
         Protege contra pérdida de datos:
-        - Si el formulario está limpio -> carga directamente.
-        - Si hay cambios sin guardar -> pide confirmación.
+        - Si el formulario está limpio -> limpia mensajes/errores y carga directamente.
+        - Si hay cambios sin guardar -> pide confirmación y, al confirmar,
+          limpia mensajes/errores y carga el nuevo paciente.
         """
         nonlocal form_dirty
 
-        if not form_dirty:
+        # Helper: limpia mensajes y errores y luego carga el paciente
+        def cargar_limpiando():
+            # limpiar mensajes
+            mensaje_estado.value = ""
+            mensaje_estado.color = "red"
+            # limpiar errores visuales en campos
+            for campo in (documento, tipo_documento, nombre_completo, fecha_nacimiento, email):
+                campo.error_text = None
+            page.update()
             cargar_paciente_en_formulario(doc)
+
+        if not form_dirty:
+            cargar_limpiando()
             return
 
         def on_cancel(e):
@@ -522,7 +541,7 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
             # descartamos cambios no guardados
             form_dirty = False
             page.update()
-            cargar_paciente_en_formulario(doc)
+            cargar_limpiando()
 
         dialog = ft.AlertDialog(
             modal=True,
@@ -538,6 +557,7 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         )
 
         page.open(dialog)
+
 
     def guardar_paciente_handler(e):
         """
