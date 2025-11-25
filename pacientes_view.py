@@ -1,3 +1,6 @@
+import re
+from datetime import datetime
+
 import flet as ft
 from db import (
     crear_paciente,
@@ -85,16 +88,22 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
     )
 
     escolaridad = ft.TextField(label="Escolaridad", width=250)
+
     eps = ft.TextField(label="EPS", width=250)
+    # Contenedor para mostrar sugerencias de EPS (autocomplete simple)
+    eps_sugerencias = ft.Column(spacing=2, visible=False)
+
     direccion = ft.TextField(label="Dirección", width=400)
     email = ft.TextField(label="Email", width=300)
     telefono = ft.TextField(label="Teléfono de contacto", width=200)
 
     contacto_emergencia_nombre = ft.TextField(
-        label="Nombre contacto de emergencia", width=300
+        label="Nombre contacto de emergencia",
+        width=300,
     )
     contacto_emergencia_telefono = ft.TextField(
-        label="Teléfono contacto de emergencia", width=200
+        label="Teléfono contacto de emergencia",
+        width=200,
     )
 
     observaciones = ft.TextField(
@@ -105,14 +114,14 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         width=600,
     )
 
-    # Campos para registrar antecedentes iniciales al crear/editar paciente
+    # Campos para registrar antecedentes al crear/editar paciente
     antecedente_medico_form = ft.TextField(
-       label="Antecedente médico",
-       multiline=True,
-       min_lines=2,
-       max_lines=3,
-       width=600,
-)   
+        label="Antecedente médico",
+        multiline=True,
+        min_lines=2,
+        max_lines=3,
+        width=600,
+    )
 
     antecedente_psico_form = ft.TextField(
         label="Antecedente psicológico",
@@ -122,10 +131,13 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         width=600,
     )
 
+    # mensaje_estado: para mostrar errores / confirmaciones de guardado
     mensaje_estado = ft.Text(value="", color="red")
+    # texto_contexto: para mostrar "Editando paciente: ..."
+    texto_contexto = ft.Text(value="", color="blue", size=12)
 
     # ------------------------------------------------------------------
-    # CONTROLES PARA HISTORIAL DE ANTECEDENTES (PARTE INFERIOR)
+    # CONTROLES PARA HISTORIAL DE ANTECEDENTES (LADO DERECHO)
     # ------------------------------------------------------------------
 
     etiqueta_paciente_antecedentes = ft.Text(
@@ -181,8 +193,20 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
     documento_seleccionado = None
 
     # ------------------------------------------------------------------
-    # FUNCIONES AUXILIARES
+    # FUNCIONES AUXILIARES GENERALES
     # ------------------------------------------------------------------
+
+    def mostrar_snackbar(texto: str):
+        """Muestra un mensaje emergente en la parte inferior."""
+        page.snack_bar = ft.SnackBar(content=ft.Text(texto))
+        page.snack_bar.open = True
+        page.update()
+
+    def email_valido(correo: str) -> bool:
+        """Valida la estructura básica de un email."""
+        if not correo:
+            return True
+        return re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", correo) is not None
 
     def reset_dropdowns_a_default():
         """Pone los dropdowns en su opción inicial ('Seleccione ...')."""
@@ -190,8 +214,12 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         sexo.value = "sexo_default"
         estado_civil.value = "estado_default"
 
+    # ------------------------------------------------------------------
+    # FUNCIONES AUXILIARES: ANTECEDENTES
+    # ------------------------------------------------------------------
+
     def limpiar_antecedentes():
-        """Limpia tablas de antecedentes (historial) en la parte inferior."""
+        """Limpia tablas de antecedentes (historial) en la parte derecha."""
         antecedentes_medicos_table.rows.clear()
         antecedentes_psico_table.rows.clear()
 
@@ -225,6 +253,10 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
 
         page.update()
 
+    # ------------------------------------------------------------------
+    # FUNCIONES AUXILIARES: FORMULARIO PACIENTE
+    # ------------------------------------------------------------------
+
     def limpiar_formulario():
         """
         Limpia el formulario de paciente y sale de modo edición.
@@ -240,6 +272,7 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         eps.value = ""
         direccion.value = ""
         email.value = ""
+        email.error_text = None
         telefono.value = ""
         contacto_emergencia_nombre.value = ""
         contacto_emergencia_telefono.value = ""
@@ -247,6 +280,7 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         antecedente_medico_form.value = ""
         antecedente_psico_form.value = ""
         mensaje_estado.value = ""
+        texto_contexto.value = ""
 
         # Dropdowns
         reset_dropdowns_a_default()
@@ -262,7 +296,70 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         )
         limpiar_antecedentes()
 
+        # Ocultar sugerencias de EPS
+        eps_sugerencias.visible = False
+        eps_sugerencias.controls.clear()
+
         page.update()
+
+    # ------------------------------------------------------------------
+    # FUNCIONES: AUTOCOMPLETE EPS
+    # ------------------------------------------------------------------
+
+    def seleccionar_sugerencia_eps(valor: str):
+        """Selecciona una EPS sugerida y oculta las sugerencias."""
+        eps.value = valor
+        eps_sugerencias.visible = False
+        eps_sugerencias.controls.clear()
+        page.update()
+
+    def actualizar_sugerencias_eps(e=None):
+        """
+        Autocompletado básico de EPS:
+        - Usa los valores existentes en pacientes_cache
+        - Sugiere coincidencias que empiezan igual al texto digitado
+        """
+        texto = (eps.value or "").strip().lower()
+        eps_sugerencias.controls.clear()
+
+        if not texto:
+            eps_sugerencias.visible = False
+            page.update()
+            return
+
+        # Conjunto de EPS existentes no vacías
+        eps_existentes = sorted(
+            {
+                (p.get("eps") or "").strip()
+                for p in pacientes_cache
+                if (p.get("eps") or "").strip()
+            }
+        )
+
+        coincidencias = [
+            val
+            for val in eps_existentes
+            if val.lower().startswith(texto) and val.lower() != texto
+        ]
+
+        if not coincidencias:
+            eps_sugerencias.visible = False
+        else:
+            for val in coincidencias[:5]:
+                eps_sugerencias.controls.append(
+                    ft.TextButton(
+                        text=val,
+                        style=ft.ButtonStyle(padding=0),
+                        on_click=lambda ev, v=val: seleccionar_sugerencia_eps(v),
+                    )
+                )
+            eps_sugerencias.visible = True
+
+        page.update()
+
+    # ------------------------------------------------------------------
+    # FUNCIONES: LISTA DE PACIENTES
+    # ------------------------------------------------------------------
 
     def cargar_pacientes():
         """Carga todos los pacientes desde la BD y refresca la tabla."""
@@ -270,6 +367,8 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         pacientes = listar_pacientes()
         pacientes_cache = [dict(p) for p in pacientes]
         aplicar_filtro_tabla()
+        # Actualizar posibles sugerencias para EPS
+        actualizar_sugerencias_eps()
 
     def aplicar_filtro_tabla(e=None):
         """Aplica filtro de búsqueda sobre el cache y rellena la tabla."""
@@ -283,6 +382,16 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
                 ].lower():
                     continue
 
+            # Documento como "link" para editar
+            doc_cell = ft.DataCell(
+                ft.TextButton(
+                    text=p["documento"],
+                    on_click=lambda ev, doc=p["documento"]: cargar_paciente_en_formulario(
+                        doc
+                    ),
+                )
+            )
+
             acciones = ft.Row(
                 [
                     ft.TextButton(
@@ -293,7 +402,7 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
                     ),
                     ft.TextButton(
                         "Eliminar",
-                        on_click=lambda ev, doc=p["documento"]: eliminar_paciente_action(
+                        on_click=lambda ev, doc=p["documento"]: confirmar_eliminar_paciente(
                             doc
                         ),
                     ),
@@ -304,7 +413,7 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
             tabla_pacientes.rows.append(
                 ft.DataRow(
                     cells=[
-                        ft.DataCell(ft.Text(p["documento"])),
+                        doc_cell,
                         ft.DataCell(ft.Text(p["tipo_documento"])),
                         ft.DataCell(ft.Text(p["nombre_completo"])),
                         ft.DataCell(ft.Text(p["fecha_nacimiento"])),
@@ -317,6 +426,10 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
             )
 
         page.update()
+
+    # ------------------------------------------------------------------
+    # FUNCIONES: CARGAR PACIENTE Y GUARDAR / ELIMINAR
+    # ------------------------------------------------------------------
 
     def cargar_paciente_en_formulario(doc: str):
         """
@@ -345,12 +458,13 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         eps.value = p.get("eps") or ""
         direccion.value = p.get("direccion") or ""
         email.value = p.get("email") or ""
+        email.error_text = None
         telefono.value = p.get("telefono") or ""
         contacto_emergencia_nombre.value = p.get("contacto_emergencia_nombre") or ""
         contacto_emergencia_telefono.value = p.get("contacto_emergencia_telefono") or ""
         observaciones.value = p.get("observaciones") or ""
 
-        # Campos de antecedentes iniciales se dejan vacíos (sirven para crear nuevos)
+        # Campos de antecedentes se dejan vacíos (sirven para crear nuevos)
         antecedente_medico_form.value = ""
         antecedente_psico_form.value = ""
 
@@ -358,24 +472,28 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         documento.disabled = True
         modo_edicion = True
         documento_seleccionado = p["documento"]
-        mensaje_estado.value = f"Editando paciente: {p['nombre_completo']}"
-        mensaje_estado.color = "blue"
+        texto_contexto.value = f"Editando paciente: {p['nombre_completo']}"
 
         # Actualizar panel de antecedentes
         etiqueta_paciente_antecedentes.value = (
             f"Antecedentes de: {p['nombre_completo']} ({p['documento']})"
         )
         cargar_antecedentes(p["documento"])
+        actualizar_sugerencias_eps()
 
         page.update()
 
     def guardar_paciente_handler(e):
         """
         Crea o actualiza un paciente.
-        Además, si se diligencian antecedentes iniciales,
+        Además, si se diligencian antecedentes,
         se insertan en sus tablas correspondientes.
         """
         nonlocal modo_edicion, documento_seleccionado
+
+        mensaje_estado.value = ""
+        mensaje_estado.color = "red"
+        email.error_text = None
 
         obligatorios = [
             (documento, "Documento"),
@@ -387,15 +505,33 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         for campo, nombre in obligatorios:
             if not campo.value:
                 mensaje_estado.value = f"El campo '{nombre}' es obligatorio."
-                mensaje_estado.color = "red"
                 page.update()
                 return
+
+        # Validación básica de formato de fecha + valor real
+        fn = (fecha_nacimiento.value or "").strip()
+        try:
+            datetime.strptime(fn, "%d-%m-%Y")
+        except ValueError:
+            mensaje_estado.value = (
+                "La fecha de nacimiento no es válida. Usa formato DD-MM-YYYY."
+            )
+            page.update()
+            return
+
+        # Validación de email (inline en el campo)
+        correo = (email.value or "").strip()
+        if correo and not email_valido(correo):
+            email.error_text = "Correo inválido, revisa el formato."
+            mensaje_estado.value = "Hay errores en el formulario."
+            page.update()
+            return
 
         paciente = {
             "documento": documento.value.strip(),
             "tipo_documento": (tipo_documento.value or "").strip(),
             "nombre_completo": nombre_completo.value.strip(),
-            "fecha_nacimiento": fecha_nacimiento.value.strip(),
+            "fecha_nacimiento": fn,
             "sexo": (sexo.value or "").strip()
             if sexo.value not in ("sexo_default", None)
             else "",
@@ -405,7 +541,7 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
             "escolaridad": (escolaridad.value or "").strip(),
             "eps": eps.value.strip(),
             "direccion": direccion.value.strip(),
-            "email": email.value.strip(),
+            "email": correo,
             "telefono": telefono.value.strip(),
             "contacto_emergencia_nombre": contacto_emergencia_nombre.value.strip(),
             "contacto_emergencia_telefono": contacto_emergencia_telefono.value.strip(),
@@ -415,17 +551,16 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         try:
             if modo_edicion and documento_seleccionado == paciente["documento"]:
                 actualizar_paciente(paciente)
-                mensaje_estado.value = "Paciente actualizado correctamente."
+                texto_snack = "Paciente actualizado correctamente."
             else:
                 crear_paciente(paciente)
-                mensaje_estado.value = "Paciente guardado correctamente."
+                texto_snack = "Paciente guardado correctamente."
         except Exception as ex:
             mensaje_estado.value = f"Error al guardar paciente: {ex}"
-            mensaje_estado.color = "red"
             page.update()
             return
 
-        # Registrar antecedentes iniciales si se diligenciaron
+        # Registrar antecedentes si se diligenciaron
         doc = paciente["documento"]
         txt_med = (antecedente_medico_form.value or "").strip()
         txt_psico = (antecedente_psico_form.value or "").strip()
@@ -435,32 +570,132 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         if txt_psico:
             crear_antecedente_psicologico(doc, txt_psico)
 
+        # Mensaje de éxito
         mensaje_estado.color = "green"
+        mensaje_estado.value = texto_snack
 
-        # Tras guardar, recargamos tabla y limpiamos formulario
-        limpiar_formulario()
+        # Refrescar tabla y mantener paciente cargado
         cargar_pacientes()
+        cargar_paciente_en_formulario(doc)
+
+        mostrar_snackbar(texto_snack)
+
+    # ------------------------------------------------------------------
+    # ELIMINAR PACIENTE + CONFIRMACIÓN
+    # ------------------------------------------------------------------
 
     def eliminar_paciente_action(doc: str):
         """Elimina un paciente y refresca la lista."""
         nonlocal modo_edicion, documento_seleccionado
 
-        eliminar_paciente(doc)
+        try:
+            eliminar_paciente(doc)
+        except Exception as ex:
+            mensaje_estado.value = f"Error al eliminar paciente: {ex}"
+            mensaje_estado.color = "red"
+            page.update()
+            return
 
         # Si estaba en edición, limpiamos el formulario
         if modo_edicion and documento_seleccionado == doc:
             limpiar_formulario()
 
-        mensaje_estado.value = f"Paciente {doc} eliminado."
-        mensaje_estado.color = "green"
         cargar_pacientes()
+        mensaje_estado.value = f"Paciente {doc} eliminado correctamente."
+        mensaje_estado.color = "green"
+        mostrar_snackbar(f"Paciente {doc} eliminado.")
         page.update()
+
+    def confirmar_eliminar_paciente(doc: str):
+        """Muestra un diálogo de confirmación antes de eliminar un paciente."""
+
+        def on_cancel(e):
+            dialog.open = False
+            page.update()
+
+        def on_confirm(e):
+            dialog.open = False
+            page.update()
+            eliminar_paciente_action(doc)
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Eliminar paciente"),
+            content=ft.Text(
+                f"¿Estás seguro de eliminar al paciente con documento {doc}?\n"
+                "Esta acción no se puede deshacer."
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=on_cancel),
+                ft.TextButton("Eliminar", on_click=on_confirm),
+            ],
+        )
+
+        # Forma recomendada en versiones recientes de Flet
+        page.open(dialog)
+
+    # ------------------------------------------------------------------
+    # MANEJO DE FECHA: FORMATEO AUTOMÁTICO
+    # ------------------------------------------------------------------
+
+    def formatear_fecha_nacimiento(e=None):
+        """
+        Mientras el usuario escribe, se formatea como DD-MM-YYYY.
+        Solo se permiten dígitos, se insertan guiones automáticamente.
+        """
+        valor = fecha_nacimiento.value or ""
+        digitos = "".join(ch for ch in valor if ch.isdigit())
+        if len(digitos) > 8:
+            digitos = digitos[:8]
+
+        if len(digitos) <= 2:
+            nuevo = digitos
+        elif len(digitos) <= 4:
+            nuevo = f"{digitos[:2]}-{digitos[2:]}"
+        else:
+            nuevo = f"{digitos[:2]}-{digitos[2:4]}-{digitos[4:]}"
+
+        if fecha_nacimiento.value != nuevo:
+            fecha_nacimiento.value = nuevo
+            page.update()
+
+    # ------------------------------------------------------------------
+    # MANEJO DE DIÁLOGO DE CANCELAR
+    # ------------------------------------------------------------------
+
+    def abrir_dialogo_cancelar(e):
+        """Muestra confirmación antes de limpiar el formulario."""
+
+        def on_no(ev):
+            dialog.open = False
+            page.update()
+
+        def on_si(ev):
+            dialog.open = False
+            page.update()
+            limpiar_formulario()
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Cancelar edición"),
+            content=ft.Text(
+                "¿Deseas cancelar y limpiar todos los campos del formulario?"
+            ),
+            actions=[
+                ft.TextButton("No", on_click=on_no),
+                ft.TextButton("Sí", on_click=on_si),
+            ],
+        )
+
+        page.open(dialog)
 
     # ------------------------------------------------------------------
     # WIRING DE EVENTOS
     # ------------------------------------------------------------------
 
     buscador.on_change = aplicar_filtro_tabla
+    eps.on_change = actualizar_sugerencias_eps
+    fecha_nacimiento.on_change = formatear_fecha_nacimiento
 
     boton_guardar = ft.ElevatedButton(
         text="Guardar paciente",
@@ -472,9 +707,17 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         on_click=lambda e: limpiar_formulario(),
     )
 
+    boton_cancelar = ft.TextButton(
+        text="Cancelar",
+        on_click=abrir_dialogo_cancelar,
+    )
+
     # ------------------------------------------------------------------
     # LAYOUT (FORMULARIO + LISTADO + ANTECEDENTES)
     # ------------------------------------------------------------------
+
+    # EPS + sugerencias en la misma columna para que salgan justo debajo
+    eps_col = ft.Column([eps, eps_sugerencias], spacing=0)
 
     # Sección: Registro de paciente
     formulario = ft.Card(
@@ -485,15 +728,22 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
                     ft.Text("Registro de paciente", size=20, weight="bold"),
                     ft.Row([documento, tipo_documento, nombre_completo], wrap=True),
                     ft.Row([fecha_nacimiento, sexo, estado_civil], wrap=True),
-                    ft.Row([escolaridad, eps], wrap=True),
+                    ft.Row([escolaridad, eps_col], wrap=True),
                     ft.Row([direccion], wrap=True),
                     ft.Row([email, telefono], wrap=True),
-                    ft.Row([contacto_emergencia_nombre, contacto_emergencia_telefono]),
+                    ft.Row(
+                        [contacto_emergencia_nombre, contacto_emergencia_telefono],
+                        wrap=True,
+                    ),
                     observaciones,
                     antecedente_medico_form,
                     antecedente_psico_form,
-                    ft.Row([boton_guardar, boton_limpiar], spacing=10),
+                    ft.Row(
+                        [boton_guardar, boton_limpiar, boton_cancelar],
+                        spacing=10,
+                    ),
                     mensaje_estado,
+                    texto_contexto,
                 ],
                 spacing=10,
             ),
@@ -521,7 +771,7 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         )
     )
 
-    # Sección: Historial de antecedentes
+    # Sección: Historial de antecedentes (lado derecho)
     antecedentes_panel = ft.Card(
         content=ft.Container(
             padding=15,
