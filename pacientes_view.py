@@ -67,9 +67,9 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
     nombre_completo = ft.TextField(label="Nombre completo", width=400)
 
     fecha_nacimiento = ft.TextField(
-        label="Fecha nacimiento (DD-MM-YYYY)",
+        label="Fecha nacimiento",
         width=200,
-        hint_text="Ej: 21-04-1993",
+        hint_text="(DD-MM-YYYY)",
     )
 
      # Campo de edad solo lectura No se guarda en BD
