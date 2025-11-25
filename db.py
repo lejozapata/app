@@ -263,7 +263,7 @@ def crear_antecedente_psicologico(documento_paciente: str, descripcion: str) -> 
     conn.commit()
     conn.close()
 
-
+############### LISTAR ANTECEDENTES ################
 def listar_antecedentes_medicos(documento_paciente: str) -> List[sqlite3.Row]:
     conn = get_connection()
     cur = conn.cursor()
@@ -300,6 +300,66 @@ def listar_antecedentes_psicologicos(documento_paciente: str) -> List[sqlite3.Ro
     filas = cur.fetchall()
     conn.close()
     return filas
+
+############### ACTUALIZAR ANTECEDENTES ################
+def actualizar_antecedente_medico(antecedente_id: int, descripcion: str) -> None:
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        UPDATE antecedentes_medicos
+        SET descripcion = ?, fecha_registro = datetime('now','localtime')
+        WHERE id = ?;
+        """,
+        (descripcion, antecedente_id),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def actualizar_antecedente_psicologico(antecedente_id: int, descripcion: str) -> None:
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        UPDATE antecedentes_psicologicos
+        SET descripcion = ?, fecha_registro = datetime('now','localtime')
+        WHERE id = ?;
+        """,
+        (descripcion, antecedente_id),
+    )
+
+    conn.commit()
+    conn.close()
+
+############### ELIMINAR ANTECEDENTES ################
+def eliminar_antecedente_medico(antecedente_id: int) -> None:
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        "DELETE FROM antecedentes_medicos WHERE id = ?;",
+        (antecedente_id,),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def eliminar_antecedente_psicologico(antecedente_id: int) -> None:
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        "DELETE FROM antecedentes_psicologicos WHERE id = ?;",
+        (antecedente_id,),
+    )
+
+    conn.commit()
+    conn.close()
 
 
 if __name__ == "__main__":

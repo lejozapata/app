@@ -12,6 +12,10 @@ from db import (
     crear_antecedente_psicologico,
     listar_antecedentes_medicos,
     listar_antecedentes_psicologicos,
+    actualizar_antecedente_medico,
+    actualizar_antecedente_psicologico,
+    eliminar_antecedente_medico,
+    eliminar_antecedente_psicologico,
 )
 
 
@@ -164,6 +168,7 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         columns=[
             ft.DataColumn(ft.Text("Fecha registro")),
             ft.DataColumn(ft.Text("Descripción")),
+            ft.DataColumn(ft.Text("Acciones")),
         ],
         rows=[],
     )
@@ -172,9 +177,11 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         columns=[
             ft.DataColumn(ft.Text("Fecha registro")),
             ft.DataColumn(ft.Text("Descripción")),
+            ft.DataColumn(ft.Text("Acciones")),
         ],
         rows=[],
     )
+
 
     # ------------------------------------------------------------------
     # TABLA DE PACIENTES
@@ -227,38 +234,169 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         form_dirty = True
 
     # ------------------------------------------------------------------
-    # FUNCIONES AUXILIARES: ANTECEDENTES
+    # EDICIÓN / ELIMINACIÓN DE ANTECEDENTES
     # ------------------------------------------------------------------
 
+    def abrir_dialogo_editar_antecedente(tipo: str, antecedente: dict):
+        """
+        Abre un diálogo para editar la descripción de un antecedente.
+        tipo: "medico" o "psico"
+        antecedente: dict con al menos {"id", "descripcion"}
+        """
+        campo_descripcion = ft.TextField(
+            value=antecedente["descripcion"],
+            multiline=True,
+            min_lines=3,
+            max_lines=6,
+            width=400,
+        )
+
+        def cerrar_dialogo(e=None):
+            dialog.open = False
+            page.update()
+
+        def guardar_cambios(e):
+            texto_nuevo = (campo_descripcion.value or "").strip()
+            if not texto_nuevo:
+                # No permitir dejarlo vacío
+                return
+
+            if tipo == "medico":
+                actualizar_antecedente_medico(antecedente["id"], texto_nuevo)
+            else:
+                actualizar_antecedente_psicologico(antecedente["id"], texto_nuevo)
+
+            cerrar_dialogo()
+            # Volver a cargar antecedentes del paciente actualmente seleccionado
+            if documento_seleccionado:
+                cargar_antecedentes(documento_seleccionado)
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(
+                "Editar antecedente médico"
+                if tipo == "medico"
+                else "Editar antecedente psicológico"
+            ),
+            content=campo_descripcion,
+            actions=[
+                ft.TextButton("Cancelar", on_click=cerrar_dialogo),
+                ft.TextButton("Guardar", on_click=guardar_cambios),
+            ],
+        )
+
+        page.open(dialog)
+
+    def confirmar_eliminar_antecedente(tipo: str, antecedente_id: int):
+        """
+        Muestra confirmación antes de eliminar un antecedente.
+        tipo: "medico" o "psico"
+        """
+
+        def cancelar(e=None):
+            dialog.open = False
+            page.update()
+
+        def confirmar(e):
+            if tipo == "medico":
+                eliminar_antecedente_medico(antecedente_id)
+            else:
+                eliminar_antecedente_psicologico(antecedente_id)
+
+            dialog.open = False
+            page.update()
+
+            if documento_seleccionado:
+                cargar_antecedentes(documento_seleccionado)
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Eliminar antecedente"),
+            content=ft.Text(
+                "¿Seguro que deseas eliminar este antecedente?\n"
+                "Esta acción no se puede deshacer."
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=cancelar),
+                ft.TextButton("Eliminar", on_click=confirmar),
+            ],
+        )
+
+        page.open(dialog)
+
+
+    # ------------------------------------------------------------------
+    # FUNCIONES AUXILIARES: ANTECEDENTES
+    # ------------------------------------------------------------------
+    ####### LIMPIAR ########
     def limpiar_antecedentes():
         """Limpia tablas de antecedentes (historial) en la parte derecha."""
         antecedentes_medicos_table.rows.clear()
         antecedentes_psico_table.rows.clear()
 
+    ####### CARGAR ######## 
     def cargar_antecedentes(documento: str):
         """Carga antecedentes médicos y psicológicos del paciente."""
         limpiar_antecedentes()
 
-        # Antecedentes médicos
+        # ------------------ Antecedentes médicos ------------------
         medicos = listar_antecedentes_medicos(documento)
         for a in medicos:
+            acciones = ft.Row(
+                [
+                    ft.TextButton(
+                        "Editar",
+                        on_click=lambda e, ant=a: abrir_dialogo_editar_antecedente(
+                            "medico", dict(ant)
+                        ),
+                    ),
+                    ft.TextButton(
+                        "Eliminar",
+                        on_click=lambda e, ant_id=a["id"]: confirmar_eliminar_antecedente(
+                            "medico", ant_id
+                        ),
+                    ),
+                ],
+                spacing=5,
+            )
+
             antecedentes_medicos_table.rows.append(
                 ft.DataRow(
                     cells=[
                         ft.DataCell(ft.Text(a["fecha_registro"])),
                         ft.DataCell(ft.Text(a["descripcion"])),
+                        ft.DataCell(acciones),
                     ]
                 )
             )
 
-        # Antecedentes psicológicos
+        # ---------------- Antecedentes psicológicos ----------------
         psicologicos = listar_antecedentes_psicologicos(documento)
         for a in psicologicos:
+            acciones = ft.Row(
+                [
+                    ft.TextButton(
+                        "Editar",
+                        on_click=lambda e, ant=a: abrir_dialogo_editar_antecedente(
+                            "psico", dict(ant)
+                        ),
+                    ),
+                    ft.TextButton(
+                        "Eliminar",
+                        on_click=lambda e, ant_id=a["id"]: confirmar_eliminar_antecedente(
+                            "psico", ant_id
+                        ),
+                    ),
+                ],
+                spacing=5,
+            )
+
             antecedentes_psico_table.rows.append(
                 ft.DataRow(
                     cells=[
                         ft.DataCell(ft.Text(a["fecha_registro"])),
                         ft.DataCell(ft.Text(a["descripcion"])),
+                        ft.DataCell(acciones),
                     ]
                 )
             )
