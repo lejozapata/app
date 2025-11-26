@@ -1,6 +1,5 @@
 import re
-from datetime import datetime
-
+from datetime import datetime, date
 import flet as ft
 from db import (
     crear_paciente,
@@ -70,7 +69,15 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         label="Fecha nacimiento",
         width=200,
         hint_text="(DD-MM-YYYY)",
+        
     )
+
+    fecha_nacimiento.suffix = ft.IconButton(
+        icon=ft.Icons.CALENDAR_MONTH,
+        tooltip="Abrir calendario",
+        on_click=lambda e: page.open(datepicker_nacimiento),
+    )
+
 
      # Campo de edad solo lectura No se guarda en BD
     edad = ft.TextField(
@@ -82,6 +89,16 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         text_style=ft.TextStyle(color=ft.Colors.BLACK87),
         value="-",
     )
+
+     # DatePicker para fecha de nacimiento
+    datepicker_nacimiento = ft.DatePicker(
+        help_text="Selecciona la fecha de nacimiento",
+        first_date=datetime(1900, 1, 1),
+        last_date=datetime.now(),
+    )
+
+    # Lo agregamos a overlays de la página para poder abrirlo
+    page.overlay.append(datepicker_nacimiento)
 
     sexo = ft.Dropdown(
         label="Sexo",
@@ -204,9 +221,9 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
             ft.DataColumn(ft.Text("Tipo")),
             ft.DataColumn(ft.Text("Nombre")),
             ft.DataColumn(ft.Text("Fecha nac.")),
+            ft.DataColumn(ft.Text("Edad")),
             ft.DataColumn(ft.Text("Sexo")),
             ft.DataColumn(ft.Text("Teléfono")),
-            ft.DataColumn(ft.Text("EPS")),
             ft.DataColumn(ft.Text("Acciones")),
         ],
         rows=[],
@@ -588,9 +605,9 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
                         ft.DataCell(ft.Text(p["tipo_documento"])),
                         ft.DataCell(ft.Text(p["nombre_completo"])),
                         ft.DataCell(ft.Text(p["fecha_nacimiento"])),
-                        ft.DataCell(ft.Text(p.get("sexo") or "")),
-                        ft.DataCell(ft.Text(p.get("telefono") or "")),
-                        ft.DataCell(ft.Text(p.get("eps") or "")),
+                        ft.DataCell(ft.Text(calcular_edad_desde_fecha(p["fecha_nacimiento"]))),
+                        ft.DataCell(ft.Text(p["sexo"])),
+                        ft.DataCell(ft.Text(p["telefono"])),
                         ft.DataCell(acciones),
                     ]
                 )
@@ -1020,6 +1037,32 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         if años < 0:
             return ""
         return str(años)
+    
+    #FUNCION Para actualizar fecha desde datepicker
+
+    def actualizar_fecha_desde_datepicker(e: ft.ControlEvent):
+        # e.control es el DatePicker, su value es un datetime.date
+        if not e.control.value:
+            return
+
+        d: date = e.control.value
+
+        # 1) Actualizar el TextField con formato DD-MM-YYYY
+        fecha_nacimiento.value = d.strftime("%d-%m-%Y")
+        fecha_nacimiento.error_text = None  # limpiar errores si los había
+
+        # 2) Recalcular edad
+        hoy = date.today()
+        edad_num = hoy.year - d.year - ((hoy.month, hoy.day) < (d.month, d.day))
+        edad.value = str(edad_num)
+
+        # Si quieres marcar el formulario como “sucio”:
+        marcar_formulario_sucio()
+
+        page.update()
+
+    datepicker_nacimiento.on_change = actualizar_fecha_desde_datepicker
+
 
 
     # ------------------------------------------------------------------
