@@ -44,6 +44,8 @@ def build_agenda_view(page: ft.Page):
     fecha_seleccionada = {"value": hoy}
     semana_lunes = {"value": hoy - timedelta(days=hoy.weekday())}
     mes_actual = {"value": fecha_seleccionada["value"].replace(day=1)}
+    texto_semana = ft.Text(weight="bold")
+    txt_mes = ft.Text(weight="bold")  # 👈 nuevo: encabezado de mes
 
     # Contenedores a actualizar
     calendario_semanal_col = ft.Column(expand=True)
@@ -141,13 +143,8 @@ def build_agenda_view(page: ft.Page):
         year = m.year
         month = m.month
 
-        # Cabecera mes / año
-        encabezado = ft.Row(
-            [
-                ft.Text(f"{MESES[month-1]} {year}", weight="bold"),
-            ],
-            alignment=ft.MainAxisAlignment.CENTER,
-        )
+        # Actualizar el texto del mes en el encabezado
+        txt_mes.value = f"{MESES[month-1]} {year}"
 
         fila_dias = ft.Row(
             [
@@ -222,7 +219,7 @@ def build_agenda_view(page: ft.Page):
                 )
             )
 
-        mini_calendario_col.controls = [encabezado, fila_dias, *filas_semanas]
+        mini_calendario_col.controls = [fila_dias, *filas_semanas]
         page.update()
 
     # ---------- Sync: elegir día en mini calendario ----------
@@ -268,10 +265,17 @@ def build_agenda_view(page: ft.Page):
     )
 
     toggle_btn = ft.IconButton(
-        icon=ft.Icons.KEYBOARD_DOUBLE_ARROW_LEFT,
-        icon_size=16,
-        tooltip="Colapsar panel",
-    )
+    icon=ft.Icons.KEYBOARD_DOUBLE_ARROW_LEFT,
+    icon_size=18,
+    tooltip="Colapsar panel",
+    style=ft.ButtonStyle(
+        shape=ft.CircleBorder(),
+        bgcolor=ft.Colors.WHITE,
+        padding=12,
+        shadow_color=ft.Colors.BLACK,
+        elevation=2,
+    ),
+)
 
     # ---------- Navegación de semana ----------
 
@@ -302,6 +306,10 @@ def build_agenda_view(page: ft.Page):
         icon=ft.Icons.KEYBOARD_DOUBLE_ARROW_LEFT,
         icon_size=16,
         tooltip="Colapsar panel",
+        style=ft.ButtonStyle(
+            shape=ft.CircleBorder(),   # 👈 botón redondo
+            padding=10,
+        ),
     )
 
     def toggle_panel(e):
@@ -315,6 +323,7 @@ def build_agenda_view(page: ft.Page):
             btn_mes_siguiente.visible = True
             toggle_btn.icon = ft.Icons.KEYBOARD_DOUBLE_ARROW_LEFT
             toggle_btn.tooltip = "Colapsar panel"
+            txt_mes.visible = True
         else:
             # COLAPSADO: panel angosto, solo botón de toggle
             panel_izquierdo.width = 70  # si quieres más o menos, ajusta aquí
@@ -323,6 +332,7 @@ def build_agenda_view(page: ft.Page):
             btn_mes_siguiente.visible = False
             toggle_btn.icon = ft.Icons.KEYBOARD_DOUBLE_ARROW_RIGHT
             toggle_btn.tooltip = "Expandir panel"
+            txt_mes.visible = False
 
         page.update()
 
@@ -342,17 +352,32 @@ def build_agenda_view(page: ft.Page):
         ),
         content=ft.Column(
             [
+                # Fila superior: solo botón de colapse, alineado a la derecha
                 ft.Row(
-                    [btn_mes_anterior, btn_mes_siguiente, toggle_btn],
+                    [
+                        ft.Container(expand=True),
+                        toggle_btn,
+                    ],
+                    alignment=ft.MainAxisAlignment.END,
+                ),
+
+                # Fila del mes: <  Noviembre 2026  >
+                ft.Row(
+                    [
+                        btn_mes_anterior,
+                        txt_mes,
+                        btn_mes_siguiente,
+                    ],
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 ),
+
+                # Mini calendario debajo
                 mini_calendario_col,
             ],
             spacing=10,
         ),
         width=260,
     )
-
 
     # ---------- Barra superior de la agenda semanal ----------
 
