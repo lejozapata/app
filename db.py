@@ -3,6 +3,25 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 
 
+# ----------------- Reglas de negocio de citas -----------------
+
+# Precios por modalidad (puedes ajustar estos valores cuando quieras)
+PRECIOS_MODALIDAD: Dict[str, int] = {
+    "virtual": 0,               # TODO: poner valor real, ej. 120000
+    "presencial": 0,           # TODO: valor real
+    "convenio_empresarial": 0, # TODO: valor real
+}
+
+# Estados posibles de una cita.
+# Más adelante podemos agregar: "asiste", "no_asiste", "pendiente", etc.
+ESTADOS_CITA: Dict[str, str] = {
+    "agendada": "Agendada",
+    "confirmada": "Confirmada",
+}
+
+# --------------------------------------------------------------
+
+
 # Ruta del archivo de base de datos: ../data/sara_psico.db
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / "data"
@@ -361,6 +380,80 @@ def eliminar_antecedente_psicologico(antecedente_id: int) -> None:
     conn.commit()
     conn.close()
 
+
+
+
+# ===================== C I T A S =====================
+
+def crear_cita(cita: Dict[str, Any]) -> int:
+    """
+    Inserta una nueva cita en la base de datos.
+
+    Espera un diccionario con llaves:
+      - documento_paciente (str)
+      - fecha_hora (str, formato 'YYYY-MM-DD HH:MM')
+      - modalidad (str: 'virtual' | 'presencial' | 'convenio_empresarial')
+      - motivo (str, opcional)
+      - notas (str, opcional)
+      - estado (str: 'agendada', 'confirmada', etc.)
+    Devuelve el ID autogenerado de la cita.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        INSERT INTO citas (
+            documento_paciente,
+            fecha_hora,
+            modalidad,
+            motivo,
+            notas,
+            estado
+        ) VALUES (
+            :documento_paciente,
+            :fecha_hora,
+            :modalidad,
+            :motivo,
+            :notas,
+            :estado
+        );
+        """,
+        cita,
+    )
+
+    cita_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return cita_id
+
+
+def listar_citas_rango(fecha_inicio: str, fecha_fin: str) -> List[sqlite3.Row]:
+    """
+    Lista las citas entre dos fechas (inclusive), ordenadas por fecha_hora.
+
+    fecha_inicio y fecha_fin deben estar en formato 'YYYY-MM-DD HH:MM'
+    o 'YYYY-MM-DD HH:MM:SS' para que datetime() de SQLite las compare bien.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT *
+        FROM citas
+        WHERE datetime(fecha_hora) >= datetime(?)
+          AND datetime(fecha_hora) <= datetime(?)
+        ORDER BY datetime(fecha_hora) ASC;
+        """,
+        (fecha_inicio, fecha_fin),
+    )
+
+    filas = cur.fetchall()
+    conn.close()
+    return filas
+
+# ================== FIN C I T A S ====================
 
 if __name__ == "__main__":
     print(f"Inicializando base de datos en: {DB_PATH}")
