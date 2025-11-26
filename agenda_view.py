@@ -272,8 +272,9 @@ def build_agenda_view(page: ft.Page):
         shape=ft.CircleBorder(),
         bgcolor=ft.Colors.WHITE,
         padding=12,
-        shadow_color=ft.Colors.BLACK,
         elevation=2,
+        shadow_color=ft.Colors.BLACK,
+        
     ),
 )
 
@@ -383,8 +384,8 @@ def build_agenda_view(page: ft.Page):
 
     barra_controles = ft.Row(
         [
-            ft.IconButton(icon=ft.Icons.CHEVRON_LEFT, on_click=semana_anterior),
-            ft.IconButton(icon=ft.Icons.CHEVRON_RIGHT, on_click=semana_siguiente),
+            ft.IconButton(icon=ft.Icons.CHEVRON_LEFT, on_click=semana_anterior, tooltip="Semana Anteror",),
+            ft.IconButton(icon=ft.Icons.CHEVRON_RIGHT, on_click=semana_siguiente, tooltip="Semana Siguiente"),
             ft.TextButton("Hoy", on_click=semana_hoy),
             ft.Text("Semana:", weight="bold"),
             texto_semana,
