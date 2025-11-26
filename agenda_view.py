@@ -37,62 +37,43 @@ MESES = [
 # ---------------------------
 
 def build_agenda_view(page: ft.Page):
-    hoy = datetime.now().date()
 
-    # Día seleccionado (se marca en el mini calendario)
-    fecha_seleccionada_ref: ft.Ref[date] = ft.Ref[date]()
-    fecha_seleccionada_ref.current = hoy
+    # ========= Estado inicial =========
+    hoy = date.today()
 
-    # Lunes de la semana visible en la grilla
-    semana_lunes_ref: ft.Ref[date] = ft.Ref[date]()
-    semana_lunes_ref.current = hoy - timedelta(days=hoy.weekday())
-
-    # Primer día del mes visible en el mini calendario
-    mes_actual_ref: ft.Ref[date] = ft.Ref[date]()
-    mes_actual_ref.current = fecha_seleccionada_ref.current.replace(day=1)
+    fecha_seleccionada = {"value": hoy}
+    semana_lunes = {"value": hoy - timedelta(days=hoy.weekday())}
+    mes_actual = {"value": fecha_seleccionada["value"].replace(day=1)}
 
     # Contenedores a actualizar
     calendario_semanal_col = ft.Column(expand=True)
-    mini_calendario_col = ft.Column()
-
-        # Panel izquierdo (mini calendario) como contenedor colapsable
-    panel_visible = {"value": True}  # usamos dict para que sea mutable en closures
-
-    panel_izquierdo = ft.Container(
-        content=mini_calendario_col,
-        width=220,
-        padding=10,
-        visible=True,
-    )
-
-    # Botón para colapsar / expandir panel izquierdo
-    toggle_btn = ft.IconButton(icon=ft.Icons.KEYBOARD_DOUBLE_ARROW_LEFT)
-
-    # ---------- Colapsar calendario ----------
-
-    def toggle_panel(e):
-        panel_visible["value"] = not panel_visible["value"]
-        panel_izquierdo.visible = panel_visible["value"]
-        toggle_btn.icon = (
-            ft.Icons.KEYBOARD_DOUBLE_ARROW_LEFT if panel_visible["value"] else ft.Icons.KEYBOARD_DOUBLE_ARROW_RIGHT
-        )
-        page.update()
-
-    toggle_btn.on_click = toggle_panel
-
-
-    # Texto del rango de semana
+    mini_calendario_col = ft.Column(spacing=5)
     texto_semana = ft.Text(weight="bold")
+
+    # Estado del panel izquierdo (expandido / colapsado)
+    panel_expandido = {"value": True}
 
     # ---------- Helpers de fechas ----------
 
     def obtener_dias_semana(lunes: date):
         return [lunes + timedelta(days=i) for i in range(7)]
 
-    # ---------- Agenda semanal (derecha) ----------
+    # ---------- Click en un slot horario (por ahora solo info) ----------
+
+    def click_slot(dia: date, hora: int):
+        page.snack_bar = ft.SnackBar(
+            content=ft.Text(
+                f"Click en {dia.strftime('%Y-%m-%d')} {hora:02d}:00"
+            ),
+            bgcolor=ft.Colors.BLUE_200,
+        )
+        page.snack_bar.open = True
+        page.update()
+
+    # ---------- Renderizar agenda semanal (derecha) ----------
 
     def dibujar_calendario_semanal():
-        dias = obtener_dias_semana(semana_lunes_ref.current)
+        dias = obtener_dias_semana(semana_lunes["value"])
         horas = list(range(8, 21))
         filas = []
 
@@ -103,9 +84,10 @@ def build_agenda_view(page: ft.Page):
             f"- {DIAS_SEMANA[fin.weekday()]} {fin.day:02d}/{fin.month:02d}/{fin.year}"
         )
 
+        # Encabezado de días
         encabezado = ft.Row(
             [
-                ft.Container(width=70),
+                ft.Container(width=70),  # columna de horas
                 *[
                     ft.Container(
                         content=ft.Text(
@@ -123,6 +105,7 @@ def build_agenda_view(page: ft.Page):
         )
         filas.append(encabezado)
 
+        # Cuerpo horario
         for h in horas:
             fila = ft.Row(
                 [
@@ -149,43 +132,21 @@ def build_agenda_view(page: ft.Page):
             filas.append(fila)
 
         calendario_semanal_col.controls = filas
-        page.update()  # 👈 REFRESCA LA UI
+        page.update()
 
-
-    def click_slot(dia: date, hora: int):
-        # Aquí luego abrimos el diálogo de "Nueva cita"
-        page.snack_bar = ft.SnackBar(
-            content=ft.Text(
-                f"Click en {dia.strftime('%Y-%m-%d')} {hora:02d}:00"
-            ),
-            bgcolor=ft.Colors.BLUE_200,
-        )
-        page.snack_bar.open = True
-
-    # ---------- Mini calendario mensual (izquierda) ----------
+    # ---------- Renderizar mini calendario mensual (izquierda) ----------
 
     def dibujar_mini_calendario():
-        mes_actual = mes_actual_ref.current
-        year = mes_actual.year
-        month = mes_actual.month
+        m = mes_actual["value"]
+        year = m.year
+        month = m.month
 
+        # Cabecera mes / año
         encabezado = ft.Row(
             [
-                ft.IconButton(
-                    icon=ft.Icons.CHEVRON_LEFT,
-                    icon_size=16,
-                    tooltip="Mes anterior",
-                    on_click=mes_anterior,
-                ),
                 ft.Text(f"{MESES[month-1]} {year}", weight="bold"),
-                ft.IconButton(
-                    icon=ft.Icons.CHEVRON_RIGHT,
-                    icon_size=16,
-                    tooltip="Mes siguiente",
-                    on_click=mes_siguiente,
-                ),
             ],
-            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            alignment=ft.MainAxisAlignment.CENTER,
         )
 
         fila_dias = ft.Row(
@@ -202,7 +163,7 @@ def build_agenda_view(page: ft.Page):
         )
 
         primer_dia_mes = date(year, month, 1)
-        offset = primer_dia_mes.weekday()
+        offset = primer_dia_mes.weekday()  # 0 = lunes
         if month == 12:
             siguiente_mes = date(year + 1, 1, 1)
         else:
@@ -211,13 +172,15 @@ def build_agenda_view(page: ft.Page):
 
         celdas = []
 
+        # Huecos antes del primer día
         for _ in range(offset):
             celdas.append(ft.Container(width=28, height=24))
 
+        # Días del mes
         for dia_num in range(1, dias_en_mes + 1):
             fecha_dia = date(year, month, dia_num)
             es_hoy = (fecha_dia == hoy)
-            es_sel = (fecha_dia == fecha_seleccionada_ref.current)
+            es_sel = (fecha_dia == fecha_seleccionada["value"])
 
             bgcolor = None
             border = None
@@ -260,59 +223,141 @@ def build_agenda_view(page: ft.Page):
             )
 
         mini_calendario_col.controls = [encabezado, fila_dias, *filas_semanas]
-        page.update()  # 👈 REFRESCA LA UI
+        page.update()
 
-
-    # ---------- Sync mini-calendario <-> semana ----------
+    # ---------- Sync: elegir día en mini calendario ----------
 
     def seleccionar_dia(fecha: date):
-        fecha_seleccionada_ref.current = fecha
-        semana_lunes_ref.current = fecha - timedelta(days=fecha.weekday())
-        mes_actual_ref.current = fecha.replace(day=1)
+        fecha_seleccionada["value"] = fecha
+        semana_lunes["value"] = fecha - timedelta(days=fecha.weekday())
+        mes_actual["value"] = fecha.replace(day=1)
         dibujar_calendario_semanal()
         dibujar_mini_calendario()
 
+    # ---------- Navegación de mes ----------
+
     def mes_anterior(e):
-        m = mes_actual_ref.current
+        m = mes_actual["value"]
         if m.month == 1:
-            mes_actual_ref.current = m.replace(year=m.year - 1, month=12, day=1)
+            mes_actual["value"] = m.replace(year=m.year - 1, month=12, day=1)
         else:
-            mes_actual_ref.current = m.replace(month=m.month - 1, day=1)
+            mes_actual["value"] = m.replace(month=m.month - 1, day=1)
         dibujar_mini_calendario()
 
     def mes_siguiente(e):
-        m = mes_actual_ref.current
+        m = mes_actual["value"]
         if m.month == 12:
-            mes_actual_ref.current = m.replace(year=m.year + 1, month=1, day=1)
+            mes_actual["value"] = m.replace(year=m.year + 1, month=1, day=1)
         else:
-            mes_actual_ref.current = m.replace(month=m.month + 1, day=1)
+            mes_actual["value"] = m.replace(month=m.month + 1, day=1)
         dibujar_mini_calendario()
 
+         # Botones de navegación de mes y colapso
+    btn_mes_anterior = ft.IconButton(
+        icon=ft.Icons.CHEVRON_LEFT,
+        icon_size=16,
+        tooltip="Mes anterior",
+        on_click=mes_anterior,
+    )
+
+    btn_mes_siguiente = ft.IconButton(
+        icon=ft.Icons.CHEVRON_RIGHT,
+        icon_size=16,
+        tooltip="Mes siguiente",
+        on_click=mes_siguiente,
+    )
+
+    toggle_btn = ft.IconButton(
+        icon=ft.Icons.KEYBOARD_DOUBLE_ARROW_LEFT,
+        icon_size=16,
+        tooltip="Colapsar panel",
+    )
+
+    # ---------- Navegación de semana ----------
+
     def semana_anterior(e):
-        semana_lunes_ref.current -= timedelta(days=7)
-        fecha_seleccionada_ref.current = semana_lunes_ref.current
-        mes_actual_ref.current = fecha_seleccionada_ref.current.replace(day=1)
+        semana_lunes["value"] -= timedelta(days=7)
+        fecha_seleccionada["value"] = semana_lunes["value"]
+        mes_actual["value"] = fecha_seleccionada["value"].replace(day=1)
         dibujar_calendario_semanal()
         dibujar_mini_calendario()
 
     def semana_siguiente(e):
-        semana_lunes_ref.current += timedelta(days=7)
-        fecha_seleccionada_ref.current = semana_lunes_ref.current
-        mes_actual_ref.current = fecha_seleccionada_ref.current.replace(day=1)
+        semana_lunes["value"] += timedelta(days=7)
+        fecha_seleccionada["value"] = semana_lunes["value"]
+        mes_actual["value"] = fecha_seleccionada["value"].replace(day=1)
         dibujar_calendario_semanal()
         dibujar_mini_calendario()
 
     def semana_hoy(e):
-        fecha_seleccionada_ref.current = hoy
-        semana_lunes_ref.current = hoy - timedelta(days=hoy.weekday())
-        mes_actual_ref.current = fecha_seleccionada_ref.current.replace(day=1)
+        fecha_seleccionada["value"] = hoy
+        semana_lunes["value"] = hoy - timedelta(days=hoy.weekday())
+        mes_actual["value"] = fecha_seleccionada["value"].replace(day=1)
         dibujar_calendario_semanal()
         dibujar_mini_calendario()
 
-    # Barra superior de la agenda semanal
+    # ---------- Botón de colapso dentro del panel izquierdo ----------
+
+    toggle_btn = ft.IconButton(
+        icon=ft.Icons.KEYBOARD_DOUBLE_ARROW_LEFT,
+        icon_size=16,
+        tooltip="Colapsar panel",
+    )
+
+    def toggle_panel(e):
+        panel_expandido["value"] = not panel_expandido["value"]
+
+        if panel_expandido["value"]:
+            # EXPANDIDO: ancho normal, calendario visible, botones de mes visibles
+            panel_izquierdo.width = 260
+            mini_calendario_col.visible = True
+            btn_mes_anterior.visible = True
+            btn_mes_siguiente.visible = True
+            toggle_btn.icon = ft.Icons.KEYBOARD_DOUBLE_ARROW_LEFT
+            toggle_btn.tooltip = "Colapsar panel"
+        else:
+            # COLAPSADO: panel angosto, solo botón de toggle
+            panel_izquierdo.width = 70  # si quieres más o menos, ajusta aquí
+            mini_calendario_col.visible = False
+            btn_mes_anterior.visible = False
+            btn_mes_siguiente.visible = False
+            toggle_btn.icon = ft.Icons.KEYBOARD_DOUBLE_ARROW_RIGHT
+            toggle_btn.tooltip = "Expandir panel"
+
+        page.update()
+
+    toggle_btn.on_click = toggle_panel
+
+    # ---------- Panel izquierdo (tarjeta blanca con sombra) ----------
+
+    panel_izquierdo = ft.Container(
+        padding=10,
+        bgcolor=ft.Colors.WHITE,
+        border_radius=8,
+        shadow=ft.BoxShadow(
+            blur_radius=8,
+            spread_radius=1,
+            color=ft.Colors.BLACK12,
+            offset=ft.Offset(0, 2),
+        ),
+        content=ft.Column(
+            [
+                ft.Row(
+                    [btn_mes_anterior, btn_mes_siguiente, toggle_btn],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                ),
+                mini_calendario_col,
+            ],
+            spacing=10,
+        ),
+        width=260,
+    )
+
+
+    # ---------- Barra superior de la agenda semanal ----------
+
     barra_controles = ft.Row(
         [
-            toggle_btn,  # 👈 colapsar / expandir panel izquierdo
             ft.IconButton(icon=ft.Icons.CHEVRON_LEFT, on_click=semana_anterior),
             ft.IconButton(icon=ft.Icons.CHEVRON_RIGHT, on_click=semana_siguiente),
             ft.TextButton("Hoy", on_click=semana_hoy),
@@ -323,11 +368,11 @@ def build_agenda_view(page: ft.Page):
         spacing=5,
     )
 
-    # Dibujar estado inicial
+    # ---------- Render inicial ----------
+
     dibujar_calendario_semanal()
     dibujar_mini_calendario()
 
-    # Layout final: mini calendario izquierda, agenda derecha
     columna_derecha = ft.Column(
         [
             barra_controles,
@@ -337,20 +382,10 @@ def build_agenda_view(page: ft.Page):
         expand=True,
     )
 
-    return ft.Column(
+    return ft.Row(
         [
-            # Barra superior común a toda la vista
-            # (ya incluye el botón de colapse)
-            # barra_controles y Divider ya están dentro de columna_derecha,
-            # así que aquí solo armamos fila principal.
-            ft.Row(
-                [
-                    panel_izquierdo,
-                    columna_derecha,
-                ],
-                expand=True,
-            )
+            panel_izquierdo,
+            columna_derecha,
         ],
         expand=True,
     )
-
