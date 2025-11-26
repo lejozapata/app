@@ -6,9 +6,15 @@ from pacientes_view import build_pacientes_view
 
 def main(page: ft.Page):
     page.title = "Gestión de Pacientes - Sara"
-    page.window_width = 1100
-    page.window_height = 700
-    page.scroll = "always"
+    # Tamaño inicial de la ventana
+    page.window.width = 1600
+    page.window.height = 1300
+
+    # Tamaño mínimo para que no se deforme el layout
+    #page.window.min_width = 1100
+    #page.window.min_height = 700
+    #page.scroll = "always"
+
     page.locale_configuration = ft.LocaleConfiguration(
         supported_locales=[
             ft.Locale("es", "CO"),   # Español Colombia
@@ -54,4 +60,7 @@ def main(page: ft.Page):
 
 
 if __name__ == "__main__":
-    ft.app(target=main)
+    ft.app(
+        target=main,
+        view=ft.AppView.FLET_APP,  # escritorio
+    )
