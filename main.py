@@ -8,6 +8,12 @@ def main(page: ft.Page):
     page.window_width = 1100
     page.window_height = 700
     page.scroll = "always"
+    page.locale_configuration = ft.LocaleConfiguration(
+        supported_locales=[
+            ft.Locale("es", "CO"),   # Español Colombia
+        ],
+        current_locale=ft.Locale("es", "CO"),
+    )
 
     # Inicializar base de datos
     init_db()

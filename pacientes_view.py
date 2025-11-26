@@ -18,6 +18,7 @@ from db import (
 )
 
 
+
 def build_pacientes_view(page: ft.Page) -> ft.Control:
     """
     Vista principal de gestión de pacientes:
@@ -72,12 +73,6 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         
     )
 
-    fecha_nacimiento.suffix = ft.IconButton(
-        icon=ft.Icons.CALENDAR_MONTH,
-        tooltip="Abrir calendario",
-        on_click=lambda e: page.open(datepicker_nacimiento),
-    )
-
 
      # Campo de edad solo lectura No se guarda en BD
     edad = ft.TextField(
@@ -95,6 +90,7 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         help_text="Selecciona la fecha de nacimiento",
         first_date=datetime(1900, 1, 1),
         last_date=datetime.now(),
+        date_picker_entry_mode=ft.DatePickerEntryMode.CALENDAR_ONLY
     )
 
     # Lo agregamos a overlays de la página para poder abrirlo
@@ -456,7 +452,8 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         observaciones.value = ""
         antecedente_medico_form.value = ""
         antecedente_psico_form.value = ""
-        edad.value = ""
+        datepicker_nacimiento.value = None
+        edad.value = "-"
 
         # limpiar errores visuales de campos obligatorios
         for campo in (documento, tipo_documento, nombre_completo, fecha_nacimiento, email):
@@ -1062,6 +1059,62 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         page.update()
 
     datepicker_nacimiento.on_change = actualizar_fecha_desde_datepicker
+
+
+    def validar_fecha_nacimiento_manual():
+     try:
+        d = datetime.strptime(fecha_nacimiento.value, "%d-%m-%Y").date()
+        if d > date.today():
+            fecha_nacimiento.error_text = "La fecha no puede ser futura"
+            edad.value = ""
+            page.update()
+            return False
+        return d
+     except:
+        fecha_nacimiento.error_text = "Formato inválido (DD-MM-YYYY)"
+        edad.value = ""
+        page.update()
+        return False
+     
+    def abrir_datepicker(e):
+        """
+        Abre el DatePicker sincronizando la fecha con el contenido del TextField.
+        Si la fecha del TextField es válida, el DatePicker abrirá en esa fecha.
+        Si no es válida o está vacío, el DatePicker queda sin selección.
+        """
+
+        try:
+            if fecha_nacimiento.value:
+                # Parsear fecha escrita (DD-MM-YYYY)
+                d = datetime.strptime(fecha_nacimiento.value, "%d-%m-%Y").date()
+
+                # No permitir fechas futuras
+                if d > date.today():
+                    fecha_nacimiento.error_text = "La fecha no puede ser futura"
+                    page.update()
+                    return
+
+                # Sincronizar el datepicker con esa fecha
+                datepicker_nacimiento.value = d
+            else:
+                # Si el campo está vacío, dejamos el datepicker sin selección
+                datepicker_nacimiento.value = None
+
+        except Exception:
+            # Si el formato es inválido, abrimos el datepicker "en blanco"
+            datepicker_nacimiento.value = None
+
+        # Ahora sí, abrimos el datepicker
+        page.open(datepicker_nacimiento)
+
+#SUFIJO AL FINAL PARA QUE SALGA EL ICONO DE CALENDARIO EN EL TEXTFIELD
+
+    fecha_nacimiento.suffix = ft.IconButton(
+        icon=ft.Icons.CALENDAR_MONTH,
+        tooltip="Abrir calendario",
+        on_click=abrir_datepicker,
+    )
+
 
 
 

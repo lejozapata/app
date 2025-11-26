@@ -57,7 +57,7 @@ def init_db() -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             documento_paciente TEXT NOT NULL,
             fecha_hora TEXT NOT NULL,
-            modalidad TEXT CHECK (modalidad IN ('presencial', 'virtual')),
+            modalidad TEXT CHECK (modalidad IN ('presencial', 'virtual', 'convenio_empresarial')),
             motivo TEXT,
             notas TEXT,
             estado TEXT,
