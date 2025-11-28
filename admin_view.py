@@ -1,3 +1,4 @@
+import re
 import flet as ft
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, available_timezones
@@ -52,6 +53,22 @@ def build_timezone_options() -> list[ft.dropdown.Option]:
     return opciones
 
 
+def formatear_telefono_display(numero: str) -> str:
+    # Deja solo dígitos
+    digits = "".join(filter(str.isdigit, numero or ""))
+
+    # Limita a 10
+    digits = digits[:10]
+
+    # Aplica formato XXX XXX XXXX
+    if len(digits) <= 3:
+        return digits
+    elif len(digits) <= 6:
+        return f"{digits[:3]} {digits[3:]}"
+    else:
+        return f"{digits[:3]} {digits[3:6]} {digits[6:]}"
+
+
 def build_admin_view(page: ft.Page) -> ft.Control:
     """
     Vista de administración / configuración.
@@ -64,6 +81,11 @@ def build_admin_view(page: ft.Page) -> ft.Control:
     horarios = obtener_horarios_atencion()
 
     seccion_activa = {"value": "profesional"}  # "profesional" | "servicios"
+
+    ############ Establece formato de teléfono mientras se escribe ###########
+    def formatear_numero_telefono(e):
+        e.control.value = formatear_telefono_display(e.control.value)
+        e.control.update()
 
     # =====================================================================
     #                         SECCIÓN PROFESIONAL
@@ -102,10 +124,13 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         value=tz_value,
     )
 
+    telefono_cfg = cfg.get("telefono") or ""
+
     txt_telefono = ft.TextField(
-        label="Teléfono",
-        value=cfg.get("telefono") or "",
-        width=250,
+    label="Teléfono",
+    value=formatear_telefono_display(telefono_cfg),  # 👈 ya entra formateado
+    width=250,
+    on_change=formatear_numero_telefono,
     )
 
     txt_email = ft.TextField(
@@ -302,6 +327,10 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             hora_inicio_global = cfg.get("hora_inicio") or "07:00"
             hora_fin_global = cfg.get("hora_fin") or "21:00"
 
+        # Limpiar teléfono: solo dígitos (sin espacios ni otros símbolos)
+        telefono_raw = txt_telefono.value or ""
+        telefono_limpio = re.sub(r"\D", "", telefono_raw)  # quita todo lo que no sea número
+
         nuevo_cfg = {
             "nombre_profesional": txt_nombre.value.strip() or None,
             "hora_inicio": hora_inicio_global,
@@ -309,7 +338,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             "dias_atencion": dias_str or "1,2,3,4,5",
             "direccion": txt_direccion.value.strip() or None,
             "zona_horaria": dd_zona_horaria.value,
-            "telefono": txt_telefono.value.strip() or None,
+            "telefono": telefono_limpio or None,
             "email": txt_email.value.strip() or None,
         }
 
@@ -514,6 +543,8 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         spacing=15,
         scroll=ft.ScrollMode.AUTO,
     )
+
+
 
     # =====================================================================
     #                 CONTENEDOR DE SECCIONES + MENÚ IZQ
