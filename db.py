@@ -45,6 +45,7 @@ def init_db() -> None:
     conn = get_connection()
     cur = conn.cursor()
 
+#######################TABLAS ########################
     # Tabla de pacientes
     cur.execute(
         """
@@ -111,9 +112,65 @@ def init_db() -> None:
         """
     )
 
+     # Tabla de configuración del profesional (siempre un solo registro id=1)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS configuracion_profesional (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            nombre_profesional TEXT,
+            hora_inicio TEXT NOT NULL DEFAULT '07:00',
+            hora_fin TEXT NOT NULL DEFAULT '21:00',
+            dias_atencion TEXT NOT NULL DEFAULT '0,1,2,3,4',
+            direccion TEXT,
+            zona_horaria TEXT,
+            telefono TEXT,
+            email TEXT
+        );
+        """
+    )
+
+        # Tabla de servicios / modalidades de cita
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS servicios (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT NOT NULL,                -- Ej: "Consulta psicológica", "Convenio Empresa X"
+            tipo TEXT NOT NULL CHECK (tipo IN ('presencial','virtual','convenio_empresarial')),
+            precio REAL NOT NULL,
+            empresa TEXT,                        -- Solo aplica si es convenio_empresarial (puede ser NULL)
+            activo INTEGER NOT NULL DEFAULT 1    -- 1=activo, 0=inactivo
+        );
+        """
+    )
+
+    # Tabla de horario por día (0=Lunes .. 6=Domingo)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS horarios_atencion (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dia INTEGER NOT NULL UNIQUE CHECK(dia BETWEEN 0 AND 6),
+            habilitado INTEGER NOT NULL DEFAULT 0,
+            hora_inicio TEXT NOT NULL DEFAULT '08:00',
+            hora_fin TEXT NOT NULL DEFAULT '17:00'
+        );
+        """
+    )
+
+    # Asegurar que existan las 7 filas (una por día)
+    for d in range(7):
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO horarios_atencion (dia, habilitado, hora_inicio, hora_fin)
+            VALUES (?, 0, '08:00', '17:00');
+            """,
+            (d,),
+        )
+
+
     conn.commit()
     conn.close()
 
+#######################FIN TABLAS ########################
 
 # ------------ PACIENTES -------------
 
@@ -454,6 +511,232 @@ def listar_citas_rango(fecha_inicio: str, fecha_fin: str) -> List[sqlite3.Row]:
     return filas
 
 # ================== FIN C I T A S ====================
+
+# ------------ CONFIGURACIÓN PROFESIONAL -------------
+
+
+def obtener_configuracion_profesional() -> dict:
+    """
+    Devuelve la configuración del profesional.
+    Si no existe el registro id=1, lo crea con valores por defecto.
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute("SELECT * FROM configuracion_profesional WHERE id = 1;")
+    row = cur.fetchone()
+
+    if row is None:
+        cur.execute(
+            """
+            INSERT INTO configuracion_profesional (
+                id, nombre_profesional, hora_inicio, hora_fin, dias_atencion,
+                direccion, zona_horaria, telefono, email
+            )
+            VALUES (1, 'Sara Hernández', '07:00', '21:00', '1,2,3,4,5', NULL, '(GMT-5) Bogotá', NULL, NULL);
+            """
+        )
+        conn.commit()
+        cur.execute("SELECT * FROM configuracion_profesional WHERE id = 1;")
+        row = cur.fetchone()
+
+    cfg = {
+        "id": row["id"],
+        "nombre_profesional": row["nombre_profesional"],
+        "hora_inicio": row["hora_inicio"],
+        "hora_fin": row["hora_fin"],
+        "dias_atencion": row["dias_atencion"],
+        "direccion": row["direccion"],
+        "zona_horaria": row["zona_horaria"],
+        "telefono": row["telefono"],
+        "email": row["email"],
+    }
+
+    conn.close()
+    return cfg
+
+
+def guardar_configuracion_profesional(cfg: dict) -> None:
+    """
+    Actualiza la configuración del profesional (siempre id=1).
+    Espera claves:
+      nombre_profesional, hora_inicio, hora_fin, dias_atencion,
+      direccion, zona_horaria, telefono, email
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        INSERT INTO configuracion_profesional (
+            id, nombre_profesional, hora_inicio, hora_fin, dias_atencion,
+            direccion, zona_horaria, telefono, email
+        )
+        VALUES (
+            1, :nombre_profesional, :hora_inicio, :hora_fin, :dias_atencion,
+            :direccion, :zona_horaria, :telefono, :email
+        )
+        ON CONFLICT(id) DO UPDATE SET
+            nombre_profesional = excluded.nombre_profesional,
+            hora_inicio = excluded.hora_inicio,
+            hora_fin = excluded.hora_fin,
+            dias_atencion = excluded.dias_atencion,
+            direccion = excluded.direccion,
+            zona_horaria = excluded.zona_horaria,
+            telefono = excluded.telefono,
+            email = excluded.email;
+        """,
+        {
+            "nombre_profesional": cfg.get("nombre_profesional"),
+            "hora_inicio": cfg.get("hora_inicio"),
+            "hora_fin": cfg.get("hora_fin"),
+            "dias_atencion": cfg.get("dias_atencion"),
+            "direccion": cfg.get("direccion"),
+            "zona_horaria": cfg.get("zona_horaria"),
+            "telefono": cfg.get("telefono"),
+            "email": cfg.get("email"),
+        },
+    )
+
+    conn.commit()
+    conn.close()
+
+
+
+    # ------------ HORARIOS POR DÍA -------------
+
+
+def obtener_horarios_atencion() -> list[dict]:
+    """
+    Devuelve una lista de 7 dicts (0=Lunes .. 6=Domingo) con:
+      dia, habilitado (bool), hora_inicio (str "HH:MM"), hora_fin (str "HH:MM")
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT dia, habilitado, hora_inicio, hora_fin
+        FROM horarios_atencion
+        ORDER BY dia;
+        """
+    )
+    filas = cur.fetchall()
+    conn.close()
+
+    horarios = []
+    for row in filas:
+        horarios.append(
+            {
+                "dia": row["dia"],
+                "habilitado": bool(row["habilitado"]),
+                "hora_inicio": row["hora_inicio"],
+                "hora_fin": row["hora_fin"],
+            }
+        )
+
+    return horarios
+
+
+def guardar_horarios_atencion(horarios: list[dict]) -> None:
+    """
+    Recibe lista de dicts con claves:
+      dia (int 0-6), habilitado (bool/int), hora_inicio, hora_fin
+    y los guarda en la tabla horarios_atencion.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    for h in horarios:
+        cur.execute(
+            """
+            UPDATE horarios_atencion
+            SET habilitado = ?, hora_inicio = ?, hora_fin = ?
+            WHERE dia = ?;
+            """,
+            (
+                1 if h.get("habilitado") else 0,
+                h.get("hora_inicio"),
+                h.get("hora_fin"),
+                h.get("dia"),
+            ),
+        )
+
+    conn.commit()
+    conn.close()
+
+# ------------ SERVICIOS / MODALIDADES -------------
+
+
+def listar_servicios() -> list[sqlite3.Row]:
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT *
+        FROM servicios
+        ORDER BY activo DESC, nombre COLLATE NOCASE;
+        """
+    )
+
+    filas = cur.fetchall()
+    conn.close()
+    return filas
+
+
+def crear_servicio(nombre: str, tipo: str, precio: float, empresa: str | None = None) -> None:
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        INSERT INTO servicios (nombre, tipo, precio, empresa)
+        VALUES (?, ?, ?, ?);
+        """,
+        (nombre, tipo, precio, empresa),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def actualizar_servicio(
+    servicio_id: int,
+    nombre: str,
+    tipo: str,
+    precio: float,
+    empresa: str | None,
+    activo: bool,
+) -> None:
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        UPDATE servicios
+        SET nombre = ?, tipo = ?, precio = ?, empresa = ?, activo = ?
+        WHERE id = ?;
+        """,
+        (nombre, tipo, precio, empresa, 1 if activo else 0, servicio_id),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def eliminar_servicio(servicio_id: int) -> None:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM servicios WHERE id = ?;", (servicio_id,))
+    conn.commit()
+    conn.close()
+
+# ------------ FIN -------------
+
 
 if __name__ == "__main__":
     print(f"Inicializando base de datos en: {DB_PATH}")

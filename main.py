@@ -1,5 +1,6 @@
 import flet as ft
 from db import init_db
+from admin_view import build_admin_view
 from agenda_view import build_agenda_view
 from pacientes_view import build_pacientes_view
 
@@ -38,25 +39,43 @@ def main(page: ft.Page):
         body.content = build_agenda_view(page)
         page.update()
 
-    # ----- Barra superior de navegación -----
+    def mostrar_admin(e=None):
+        body.content = build_admin_view(page)
+        body.update()
 
-    barra_navegacion = ft.Row(
+# ----- Top Bar para admin -----
+    top_bar = ft.Row(
         [
-            ft.ElevatedButton("Pacientes", on_click=mostrar_pacientes),
-            ft.ElevatedButton("Agendar", on_click=mostrar_agenda),
+            ft.Row(
+                [
+                    ft.ElevatedButton("Pacientes", on_click=mostrar_pacientes),
+                    ft.ElevatedButton("Agendar", on_click=mostrar_agenda),
+                ]
+            ),
+            ft.Container(expand=True),
+            ft.IconButton(
+                icon=ft.Icons.SETTINGS,
+                tooltip="Configuración",
+                on_click=mostrar_admin,
+            ),
         ],
-        spacing=10,
-    )
-
-    # Agregamos barra + body al layout principal
-    page.add(
-        barra_navegacion,
-        ft.Divider(),
-        body,
+        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
     )
 
     # Vista por defecto al abrir la app
     mostrar_pacientes()
+
+ # Muestra la barra superior para admin
+    page.add(
+        ft.Column(
+            [
+                top_bar,
+                ft.Divider(),
+                body,
+            ],
+            expand=True,
+        )
+    )
 
 
 if __name__ == "__main__":
