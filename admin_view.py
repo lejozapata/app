@@ -16,8 +16,8 @@ from db import (
 
 
 def build_timezone_options() -> list[ft.dropdown.Option]:
-    """
-    Genera opciones de zona horaria basadas en zoneinfo.
+    """Genera opciones de zona horaria basadas en zoneinfo.
+
     Filtra zonas de América y construye etiquetas tipo:
       (GMT-05:00) Bogota
     """
@@ -70,10 +70,7 @@ def formatear_telefono_display(numero: str) -> str:
 
 
 def build_admin_view(page: ft.Page) -> ft.Control:
-    """
-    Vista de administración / configuración.
-    Panel izquierdo con secciones y panel derecho con contenido.
-    """
+    """Vista de administración / configuración."""
 
     # ---------------- Cargar datos desde BD ----------------
 
@@ -82,7 +79,8 @@ def build_admin_view(page: ft.Page) -> ft.Control:
 
     seccion_activa = {"value": "profesional"}  # "profesional" | "servicios"
 
-    ############ Establece formato de teléfono mientras se escribe ###########
+    # -------- Formateo de teléfono mientras se escribe --------
+
     def formatear_numero_telefono(e):
         e.control.value = formatear_telefono_display(e.control.value)
         e.control.update()
@@ -106,12 +104,11 @@ def build_admin_view(page: ft.Page) -> ft.Control:
     )
 
     zona_opciones = build_timezone_options()
-    # determinar valor por defecto
+
     cfg_tz = cfg.get("zona_horaria")
     if cfg_tz and any(o.key == cfg_tz for o in zona_opciones):
         tz_value = cfg_tz
     else:
-        # intentamos encontrar Bogota, si no, la primera
         tz_value = next(
             (o.key for o in zona_opciones if "Bogota" in o.key or "Bogotá" in o.key),
             zona_opciones[0].key,
@@ -127,10 +124,10 @@ def build_admin_view(page: ft.Page) -> ft.Control:
     telefono_cfg = cfg.get("telefono") or ""
 
     txt_telefono = ft.TextField(
-    label="Teléfono",
-    value=formatear_telefono_display(telefono_cfg),  # 👈 ya entra formateado
-    width=250,
-    on_change=formatear_numero_telefono,
+        label="Teléfono",
+        value=formatear_telefono_display(telefono_cfg),
+        width=250,
+        on_change=formatear_numero_telefono,
     )
 
     txt_email = ft.TextField(
@@ -139,9 +136,17 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         width=300,
     )
 
-    # -------- Horario por día (similar a AgendaPro) --------
+    # -------- Horario por día --------
 
-    nombres_dias = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+    nombres_dias = [
+        "Lunes",
+        "Martes",
+        "Miércoles",
+        "Jueves",
+        "Viernes",
+        "Sábado",
+        "Domingo",
+    ]
 
     filas_horario: list[dict] = []
 
@@ -169,54 +174,36 @@ def build_admin_view(page: ft.Page) -> ft.Control:
 
         dd_ini_hora = ft.Dropdown(
             width=80,
-            text_style=ft.TextStyle(
-            size=14,
-            ),
+            text_style=ft.TextStyle(size=14),
             options=[ft.dropdown.Option(h) for h in opciones_horas],
             value=ini_hh,
             menu_height=250,
         )
         dd_ini_min = ft.Dropdown(
             width=80,
-            text_style=ft.TextStyle(
-            size=14,
-            ),
+            text_style=ft.TextStyle(size=14),
             options=[ft.dropdown.Option(m) for m in opciones_minutos],
             value=ini_mm,
             menu_height=250,
         )
         dd_fin_hora = ft.Dropdown(
             width=80,
-            text_style=ft.TextStyle(
-            size=14,
-            ),
+            text_style=ft.TextStyle(size=14),
             options=[ft.dropdown.Option(h) for h in opciones_horas],
             value=fin_hh,
             menu_height=250,
         )
         dd_fin_min = ft.Dropdown(
             width=80,
-            text_style=ft.TextStyle(
-            size=14,
-            ),
+            text_style=ft.TextStyle(size=14),
             options=[ft.dropdown.Option(m) for m in opciones_minutos],
             value=fin_mm,
             menu_height=250,
         )
 
-        # Contenedores de dropdowns
-        cont_ini_dd = ft.Row(
-            [dd_ini_hora, dd_ini_min],
-            spacing=5,
-            width=200,
-        )
-        cont_fin_dd = ft.Row(
-            [dd_fin_hora, dd_fin_min],
-            spacing=5,
-            width=200,
-        )
+        cont_ini_dd = ft.Row([dd_ini_hora, dd_ini_min], spacing=5, width=200)
+        cont_fin_dd = ft.Row([dd_fin_hora, dd_fin_min], spacing=5, width=200)
 
-        # Textos "Cerrado"
         lbl_ini_cerrado = ft.Text("Cerrado", width=200, color=ft.Colors.GREY_600)
         lbl_fin_cerrado = ft.Text("Cerrado", width=200, color=ft.Colors.GREY_600)
 
@@ -234,15 +221,15 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             "lbl_fin_cerrado": lbl_fin_cerrado,
         }
 
-        # Función para mostrar/ocultar dropdowns vs "Cerrado"
         def actualizar_visibilidad(e=None, fila_ref=fila):
             activo = fila_ref["switch"].value
             fila_ref["cont_ini_dd"].visible = activo
             fila_ref["cont_fin_dd"].visible = activo
             fila_ref["lbl_ini_cerrado"].visible = not activo
             fila_ref["lbl_fin_cerrado"].visible = not activo
-            # actualiza inmediatamente el UI
-            page.update()
+            # Mientras build_admin_view se está ejecutando, el control aún no está en page:
+            if page is not None and page.controls:
+                page.update()
 
         sw_activo.on_change = lambda e, fila_ref=fila: actualizar_visibilidad(
             e, fila_ref=fila_ref
@@ -251,7 +238,6 @@ def build_admin_view(page: ft.Page) -> ft.Control:
 
         filas_horario.append(fila)
 
-    # Construir filas visuales de la tabla de horario
     filas_visual_horario: list[ft.Control] = []
 
     filas_visual_horario.append(
@@ -272,20 +258,12 @@ def build_admin_view(page: ft.Page) -> ft.Control:
                 [
                     ft.Text(f["nombre"], width=120),
                     ft.Container(f["switch"], width=80),
-                    ft.Stack(
-                        [f["cont_ini_dd"], f["lbl_ini_cerrado"]],
-                        width=200,
-                    ),
-                    ft.Stack(
-                        [f["cont_fin_dd"], f["lbl_fin_cerrado"]],
-                        width=200,
-                    ),
+                    ft.Stack([f["cont_ini_dd"], f["lbl_ini_cerrado"]], width=200),
+                    ft.Stack([f["cont_fin_dd"], f["lbl_fin_cerrado"]], width=200),
                 ],
                 spacing=10,
             )
         )
-
-    # -------- Guardar profesional + horario por día --------
 
     def hora_a_minutos(hora_str: str) -> int:
         try:
@@ -295,7 +273,6 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             return 0
 
     def guardar_profesional(e):
-        # Días activos según switch
         dias_activos = [str(f["dia"]) for f in filas_horario if f["switch"].value]
         dias_str = ",".join(dias_activos) if dias_activos else ""
 
@@ -327,9 +304,8 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             hora_inicio_global = cfg.get("hora_inicio") or "07:00"
             hora_fin_global = cfg.get("hora_fin") or "21:00"
 
-        # Limpiar teléfono: solo dígitos (sin espacios ni otros símbolos)
         telefono_raw = txt_telefono.value or ""
-        telefono_limpio = re.sub(r"\D", "", telefono_raw)  # quita todo lo que no sea número
+        telefono_limpio = re.sub(r"\D", "", telefono_raw)
 
         nuevo_cfg = {
             "nombre_profesional": txt_nombre.value.strip() or None,
@@ -345,7 +321,9 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         guardar_configuracion_profesional(nuevo_cfg)
         guardar_horarios_atencion(lista_horarios)
 
-        page.snack_bar = ft.SnackBar(content=ft.Text("Configuración de horario guardada."))
+        page.snack_bar = ft.SnackBar(
+            content=ft.Text("Configuración de horario guardada.")
+        )
         page.snack_bar.open = True
         page.update()
 
@@ -358,19 +336,10 @@ def build_admin_view(page: ft.Page) -> ft.Control:
                 color=ft.Colors.GREY_700,
             ),
             ft.Divider(),
-
             txt_nombre,
-            ft.Row(
-                [txt_direccion],
-                spacing=10,
-            ),
-            ft.Row(
-                [dd_zona_horaria, txt_telefono, txt_email],
-                spacing=10,
-            ),
-
+            ft.Row([txt_direccion], spacing=10),
+            ft.Row([dd_zona_horaria, txt_telefono, txt_email], spacing=10),
             ft.Divider(),
-
             ft.Text("Horario de inicio y fin de la jornada", weight="bold"),
             ft.Text(
                 "Selecciona los días de atención y el horario.",
@@ -383,7 +352,6 @@ def build_admin_view(page: ft.Page) -> ft.Control:
                 border=ft.border.all(1, ft.Colors.GREY_300),
                 border_radius=8,
             ),
-
             ft.ElevatedButton("Guardar cambios", on_click=guardar_profesional),
         ],
         spacing=15,
@@ -394,7 +362,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
     #                         SECCIÓN SERVICIOS
     # =====================================================================
 
-    servicios_table = ft.Column(spacing=5)
+    servicios_table = ft.Column(spacing=10)
 
     def refrescar_servicios():
         servicios_table.controls.clear()
@@ -428,9 +396,9 @@ def build_admin_view(page: ft.Page) -> ft.Control:
                             [
                                 ft.IconButton(
                                     icon=ft.Icons.EDIT,
-                                    tooltip="Editar (pendiente)",
-                                    disabled=True,
-                                ),
+                                    tooltip="Editar servicio",
+                                    on_click=lambda e, servicio=s: editar_servicio_handler(servicio),
+                                    ),
                                 ft.IconButton(
                                     icon=ft.Icons.DELETE,
                                     tooltip="Eliminar",
@@ -453,7 +421,109 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         eliminar_servicio(servicio_id)
         refrescar_servicios()
 
+    def editar_servicio_handler(servicio):
+        # Cargar datos en campos
+        txt_srv_nombre.value = servicio["nombre"]
+        dd_srv_tipo.value = servicio["tipo"]
+        txt_srv_precio.value = str(int(servicio["precio"]))
+    
+        if servicio["tipo"] == "convenio_empresarial":
+            txt_srv_empresa.disabled = False
+            txt_srv_empresa.value = servicio["empresa"] or ""
+        else:
+            txt_srv_empresa.disabled = True
+            txt_srv_empresa.value = ""
+
+        # Cambiamos apariencia del diálogo
+        dlg_nuevo_servicio.title = ft.Text("Editar servicio")
+
+        # Cambiamos acciones
+        dlg_nuevo_servicio.actions = [
+            ft.TextButton("Cancelar", on_click=cerrar_dialogo),
+            ft.ElevatedButton(
+            "Actualizar",
+            on_click=lambda e, servicio=servicio: actualizar_servicio_handler(e, servicio),
+            ),
+        ]
+
+        # Abrir diálogo
+        dlg_nuevo_servicio.open = True
+        page.open(dlg_nuevo_servicio)
+        page.update()
+
+    def actualizar_servicio_handler(e, servicio):
+        nombre = (txt_srv_nombre.value or "").strip()
+        tipo = dd_srv_tipo.value or "presencial"
+        empresa = (txt_srv_empresa.value or "").strip()
+
+        if not nombre:
+            page.snack_bar = ft.SnackBar(content=ft.Text("El nombre del servicio es obligatorio."))
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        if tipo == "convenio_empresarial" and not empresa:
+            page.snack_bar = ft.SnackBar(
+            content=ft.Text("Debes ingresar el nombre de la empresa del convenio.")
+            )
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        try:
+            precio = float(
+            (txt_srv_precio.value or "").replace(".", "").replace(",", "").strip()
+            )
+            if precio <= 0:
+                raise ValueError()
+        except Exception:
+            page.snack_bar = ft.SnackBar(content=ft.Text("Precio inválido."))
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        # Conservamos el estado actual del servicio (activo / inactivo)
+        activo = servicio["activo"] if "activo" in servicio.keys() else 1
+
+        actualizar_servicio(
+        servicio["id"],
+        nombre=nombre,
+        tipo=tipo,
+        precio=precio,
+        empresa=empresa if tipo == "convenio_empresarial" else None,
+        activo=activo,
+    )
+
+        dlg_nuevo_servicio.open = False
+        page.update()
+
+        refrescar_servicios()
+
+        page.snack_bar = ft.SnackBar(content=ft.Text("Servicio actualizado."))
+        page.snack_bar.open = True
+        page.update()
+
+
+
+    # --- Controles del diálogo de Nuevo Servicio ---
+
     txt_srv_nombre = ft.TextField(label="Nombre del servicio", width=300)
+
+    txt_srv_empresa = ft.TextField(
+        label="Empresa (si es convenio)", width=300, disabled=True
+    )
+
+    def on_cambio_tipo(e):
+        # Si es convenio, habilitamos "Empresa", si no, la deshabilitamos
+        if dd_srv_tipo.value == "convenio_empresarial":
+            txt_srv_empresa.disabled = False
+        else:
+            txt_srv_empresa.disabled = True
+            txt_srv_empresa.value = ""
+        # Solo actualizar si el control ya está montado en la página (diálogo abierto)
+        if txt_srv_empresa.page is not None:
+            txt_srv_empresa.update()
+
     dd_srv_tipo = ft.Dropdown(
         label="Tipo",
         width=200,
@@ -462,64 +532,119 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             ft.dropdown.Option("virtual"),
             ft.dropdown.Option("convenio_empresarial"),
         ],
+        on_change=on_cambio_tipo,
     )
-    txt_srv_precio = ft.TextField(label="Precio", width=200)
-    txt_srv_empresa = ft.TextField(label="Empresa (si es convenio)", width=300)
 
-    dlg_nuevo_servicio = ft.AlertDialog(modal=True)
+    txt_srv_precio = ft.TextField(
+        label="Precio",
+        width=200,
+        hint_text="Ej: 120000",
+    )
 
-    def abrir_nuevo_servicio(e):
-        txt_srv_nombre.value = ""
-        dd_srv_tipo.value = None
-        txt_srv_precio.value = ""
-        txt_srv_empresa.value = ""
+    # Diálogo con contenido (los 4 campos)
+    dlg_nuevo_servicio = ft.AlertDialog(
+        modal=True,
+        content=ft.Column(
+        [
+            txt_srv_nombre,
+            dd_srv_tipo,
+            txt_srv_precio,
+            txt_srv_empresa,
+        ],
+        tight=True,
+        spacing=10,
+    ),
+    )
 
-        dlg_nuevo_servicio.title = ft.Text("Nuevo servicio")
-        dlg_nuevo_servicio.content = ft.Column(
-            [
-                txt_srv_nombre,
-                dd_srv_tipo,
-                txt_srv_precio,
-                txt_srv_empresa,
-            ],
-            tight=True,
-            spacing=10,
-        )
-        dlg_nuevo_servicio.actions = [
-            ft.TextButton("Cancelar", on_click=lambda e: cerrar_dialogo()),
-            ft.ElevatedButton("Guardar", on_click=guardar_nuevo_servicio),
-        ]
-
-        page.dialog = dlg_nuevo_servicio
-        dlg_nuevo_servicio.open = True
-        page.update()
-
-    def cerrar_dialogo():
+    def cerrar_dialogo(e=None):
         dlg_nuevo_servicio.open = False
         page.update()
 
     def guardar_nuevo_servicio(e):
+        nombre = (txt_srv_nombre.value or "").strip()
+        tipo = dd_srv_tipo.value or "presencial"
+        empresa = (txt_srv_empresa.value or "").strip()
+
+        # Validar nombre
+        if not nombre:
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text("El nombre del servicio es obligatorio.")
+            )
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        # Validar tipo
+        if tipo not in ("presencial", "virtual", "convenio_empresarial"):
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text("Selecciona un tipo de servicio válido.")
+            )
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        # Validar empresa sólo si es convenio
+        if tipo == "convenio_empresarial" and not empresa:
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text(
+                    "Para convenios empresariales debes indicar el nombre de la empresa."
+                )
+            )
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        # Validar precio
         try:
-            precio = float(txt_srv_precio.value.replace(",", "").strip())
+            precio = float(
+                (txt_srv_precio.value or "").replace(".", "").replace(",", "").strip()
+            )
         except Exception:
-            page.snack_bar = ft.SnackBar(content=ft.Text("Precio inválido."))
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text("Precio inválido. Usa solo números.")
+            )
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        if precio <= 0:
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text("El precio debe ser mayor que 0.")
+            )
             page.snack_bar.open = True
             page.update()
             return
 
         crear_servicio(
-            nombre=txt_srv_nombre.value.strip(),
-            tipo=dd_srv_tipo.value or "presencial",
+            nombre=nombre,
+            tipo=tipo,
             precio=precio,
-            empresa=txt_srv_empresa.value.strip() or None,
+            empresa=empresa or None,
         )
+
         cerrar_dialogo()
         refrescar_servicios()
         page.snack_bar = ft.SnackBar(content=ft.Text("Servicio creado."))
         page.snack_bar.open = True
         page.update()
 
-    refrescar_servicios()
+    def abrir_nuevo_servicio(e):
+        txt_srv_nombre.value = ""
+        dd_srv_tipo.value = "presencial"
+        txt_srv_precio.value = ""
+        txt_srv_empresa.value = ""
+        txt_srv_empresa.disabled = True
+
+        dlg_nuevo_servicio.title = ft.Text("Nuevo servicio")
+
+        dlg_nuevo_servicio.actions = [
+            ft.TextButton("Cancelar", on_click=cerrar_dialogo),
+            ft.ElevatedButton("Guardar", on_click=guardar_nuevo_servicio),
+        ]
+
+        dlg_nuevo_servicio.open = True
+        page.open(dlg_nuevo_servicio)
+        page.update()
 
     seccion_servicios = ft.Column(
         [
@@ -544,7 +669,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         scroll=ft.ScrollMode.AUTO,
     )
 
-
+    refrescar_servicios()
 
     # =====================================================================
     #                 CONTENEDOR DE SECCIONES + MENÚ IZQ
@@ -559,9 +684,11 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         elif nueva == "servicios":
             contenido_derecha.content = seccion_servicios
 
+        # Aquí es donde antes fallaba: sólo actualizamos si ya está montado en la página
         if contenido_derecha.page is not None:
             contenido_derecha.update()
 
+    # Seteamos contenido inicial sin forzar update
     cambiar_seccion("profesional")
 
     menu_izquierdo = ft.Container(
@@ -595,7 +722,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         ),
     )
 
-# LAYOUT FINAL
+    # LAYOUT FINAL
     return ft.Row(
         [
             menu_izquierdo,
@@ -605,3 +732,4 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         expand=True,
         vertical_alignment=ft.CrossAxisAlignment.START,
     )
+#-----------------------------------------------------------------------------------
