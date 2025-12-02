@@ -71,7 +71,7 @@ def init_db() -> None:
         """
     )
 
-     # Tabla de citas
+      # Tabla de citas
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS citas (
@@ -82,19 +82,20 @@ def init_db() -> None:
             motivo TEXT,
             notas TEXT,
             estado TEXT,
+            precio REAL DEFAULT 0,
             pagado INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (documento_paciente) REFERENCES pacientes (documento)
         );
         """
     )
 
-    # Asegurar columna 'pagado' para bases de datos ya existentes
+    # Migraciones seguras para BD ya creadas
     cur.execute("PRAGMA table_info(citas);")
     columnas_citas = [row[1] for row in cur.fetchall()]
+    if "precio" not in columnas_citas:
+        cur.execute("ALTER TABLE citas ADD COLUMN precio REAL DEFAULT 0;")
     if "pagado" not in columnas_citas:
-        cur.execute(
-            "ALTER TABLE citas ADD COLUMN pagado INTEGER NOT NULL DEFAULT 0;"
-        )
+        cur.execute("ALTER TABLE citas ADD COLUMN pagado INTEGER NOT NULL DEFAULT 0;")
 
     # Tabla de antecedentes médicos
     cur.execute(
@@ -483,6 +484,7 @@ def crear_cita(cita: Dict[str, Any]) -> int:
             motivo,
             notas,
             estado,
+            precio,
             pagado
         ) VALUES (
             :documento_paciente,
@@ -491,6 +493,7 @@ def crear_cita(cita: Dict[str, Any]) -> int:
             :motivo,
             :notas,
             :estado,
+            :precio,
             :pagado
         );
         """,
@@ -527,6 +530,111 @@ def listar_citas_rango(fecha_inicio: str, fecha_fin: str) -> List[sqlite3.Row]:
     filas = cur.fetchall()
     conn.close()
     return filas
+
+
+def listar_citas_con_paciente_rango(fecha_inicio: str, fecha_fin: str) -> List[sqlite3.Row]:
+    """
+    Lista citas entre dos fechas incluyendo datos básicos del paciente.
+    Devuelve columnas de 'citas' +:
+      - nombre_completo
+      - telefono
+      - email
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT
+            c.*,
+            p.nombre_completo,
+            p.telefono,
+            p.email
+        FROM citas c
+        JOIN pacientes p
+            ON p.documento = c.documento_paciente
+        WHERE datetime(c.fecha_hora) >= datetime(?)
+          AND datetime(c.fecha_hora) <= datetime(?)
+        ORDER BY datetime(c.fecha_hora) ASC;
+        """,
+        (fecha_inicio, fecha_fin),
+    )
+
+    filas = cur.fetchall()
+    conn.close()
+    return filas
+
+def existe_cita_en_fecha(fecha_hora: str, cita_id_excluir: Optional[int] = None) -> bool:
+    """
+    Devuelve True si ya hay una cita exactamente en fecha_hora.
+    Si cita_id_excluir no es None, se excluye ese id de la verificación
+    (útil cuando estás editando una cita).
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    if cita_id_excluir is None:
+        cur.execute(
+            "SELECT COUNT(*) FROM citas WHERE fecha_hora = ?;",
+            (fecha_hora,),
+        )
+    else:
+        cur.execute(
+            "SELECT COUNT(*) FROM citas WHERE fecha_hora = ? AND id != ?;",
+            (fecha_hora, cita_id_excluir),
+        )
+
+    count = cur.fetchone()[0]
+    conn.close()
+    return count > 0
+
+
+def actualizar_cita(cita_id: int, campos: Dict[str, Any]) -> None:
+    """
+    Actualiza una cita existente.
+
+    'campos' es un diccionario con las columnas a actualizar, por ejemplo:
+      {
+        "fecha_hora": "2025-12-02 08:00",
+        "modalidad": "presencial",
+        "motivo": "...",
+        "notas": "...",
+        "estado": "confirmado",
+        "pagado": 1,
+        "documento_paciente": "1152..."
+      }
+    """
+    if not campos:
+        return
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    set_clauses = []
+    values: List[Any] = []
+    for columna, valor in campos.items():
+        set_clauses.append(f"{columna} = ?")
+        values.append(valor)
+
+    values.append(cita_id)
+
+    sql = f"UPDATE citas SET {', '.join(set_clauses)} WHERE id = ?;"
+    cur.execute(sql, values)
+
+    conn.commit()
+    conn.close()
+
+def eliminar_cita(cita_id: int) -> None:
+    """Elimina una cita de la base de datos."""
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("DELETE FROM citas WHERE id = ?;", (cita_id,))
+
+    conn.commit()
+    conn.close()
+
 
 # ================== FIN C I T A S ====================
 

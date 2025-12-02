@@ -1,12 +1,16 @@
 import flet as ft
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from db import (
     obtener_configuracion_profesional,
     obtener_horarios_atencion,
     listar_pacientes,
     listar_servicios,
+    listar_citas_con_paciente_rango,
     crear_cita,
+    actualizar_cita,
+    eliminar_cita,
+    existe_cita_en_fecha,
 )
 
 # ---------------------------------------------------------
@@ -44,10 +48,9 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
     Vista de Agenda:
       - Panel izquierdo: mini calendario mensual, selector de mes/año, botón colapsable.
       - Panel derecho: agenda semanal (rango horario según configuración).
-      - Click en una celda: abre diálogo de "Nueva reserva".
+      - Click en celda: crear cita.
+      - Click en bloque de cita: editar cita.
     """
-
-    # ==================== ESTADO BÁSICO ====================
 
     hoy = date.today()
 
@@ -65,6 +68,10 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
     texto_semana = ft.Text(weight="bold")
 
     panel_expandido = {"value": True}
+
+    # DatePicker para seleccionar fecha de la cita
+    date_picker = ft.DatePicker()
+    page.overlay.append(date_picker)
 
     # ==================== CONFIG / HORARIOS ====================
 
@@ -93,7 +100,7 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         START_HOUR = 7
         END_HOUR = 21
 
-    # ==================== AYUDAS HORARIO ====================
+    # ==================== HELPERS HORARIO ====================
 
     def minutos_desde_medianoche(hhmm: str) -> int:
         h, m = map(int, hhmm.split(":"))
@@ -102,40 +109,123 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
     def obtener_dias_semana(lunes: date):
         return [lunes + timedelta(days=i) for i in range(7)]
 
-    # ==================== RESERVA / DIÁLOGO ====================
+    # ==================== ESTADO RESERVA / DIÁLOGO ====================
 
-    servicios = listar_servicios()
+    # Convertimos a dict para poder usar .get()
+    servicios_rows = listar_servicios()
+    servicios = [dict(s) for s in servicios_rows]
+
     reserva = {
-        "fecha": None,       # date
+        "fecha": None,        # date
         "hora_inicio": None,  # (h, m)
         "hora_fin": None,     # (h, m)
-        "paciente": None,    # dict
-        "servicio": None,    # dict
+        "paciente": None,     # dict
+        "servicio": None,     # dict
     }
 
+    cita_editando_id = {"value": None}  # None = nueva, int = editar cita existente
+
     # --- Controles del diálogo ---
+
     titulo_reserva = ft.Text("Nueva reserva", size=20, weight="bold")
 
-    txt_fecha = ft.TextField(label="Fecha", read_only=True, width=200)
+    txt_fecha = ft.TextField(
+        label="Fecha",
+        read_only=True,
+        width=200,
+    )
+    btn_fecha = ft.IconButton(
+        icon=ft.Icons.CALENDAR_MONTH,
+        tooltip="Cambiar fecha",
+    )
 
     dd_hora = ft.Dropdown(label="Hora inicio", width=110)
     dd_min = ft.Dropdown(label="Minuto inicio", width=110)
     dd_hora_fin = ft.Dropdown(label="Hora fin", width=110)
     dd_min_fin = ft.Dropdown(label="Minuto fin", width=110)
 
-    # NUEVO: estado de la cita
-    dd_estado = ft.Dropdown(
-        label="Estado",
-        width=200,
-        options=[
-            ft.dropdown.Option("reservado", "Reservado"),
-            ft.dropdown.Option("confirmado", "Confirmado"),
-            ft.dropdown.Option("no_asistio", "No asistió"),
-        ],
-        value="reservado",
-    )
+    # ---------- Selector de estado con puntico de color (tipo AgendaPro) ----------
 
-    # NUEVO: flag de pago
+    def build_estado_selector():
+        colores = {
+            "reservado": "#77D0FA",   # azul
+            "confirmado": "#F4C542",  # amarillo
+            "no_asistio": "#F28B82",  # rojo claro
+        }
+        nombres = {
+            "reservado": "Reservado",
+            "confirmado": "Confirmado",
+            "no_asistio": "No asistió",
+        }
+
+        estado_text = ft.Text("Reservado")
+        indicador = ft.Container(
+            width=10,
+            height=10,
+            border_radius=20,
+            bgcolor=colores["reservado"],
+        )
+
+        selector = ft.PopupMenuButton(
+            content=ft.Row(
+                [
+                    indicador,
+                    estado_text,
+                    ft.Icon(ft.Icons.ARROW_DROP_DOWN, size=16),
+                ],
+                spacing=8,
+            ),
+            items=[],
+            tooltip="Estado de la cita",
+        )
+
+        def set_value(valor: str):
+            if valor not in colores:
+                valor = "reservado"
+            selector.data = valor
+            estado_text.value = nombres[valor]
+            indicador.bgcolor = colores[valor]
+            if estado_text.page is not None:
+                estado_text.update()
+            if indicador.page is not None:
+                indicador.update()
+
+        def get_value() -> str:
+            return selector.data or "reservado"
+
+        def make_item(valor: str) -> ft.PopupMenuItem:
+            return ft.PopupMenuItem(
+                content=ft.Row(
+                    [
+                        ft.Container(
+                            width=10,
+                            height=10,
+                            border_radius=20,
+                            bgcolor=colores[valor],
+                        ),
+                        ft.Text(nombres[valor]),
+                    ],
+                    spacing=8,
+                ),
+                on_click=lambda e, v=valor: set_value(v),
+            )
+
+        selector.items = [
+            make_item("reservado"),
+            make_item("confirmado"),
+            make_item("no_asistio"),
+        ]
+
+        # valor inicial
+        selector.data = "reservado"
+        # “métodos” auxiliares
+        selector.set_value = set_value
+        selector.get_value = get_value
+
+        return selector
+
+    dd_estado = build_estado_selector()
+
     chk_pagado = ft.Checkbox(label="Pagado", value=False)
 
     txt_buscar_paciente = ft.TextField(
@@ -153,6 +243,15 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             for s in servicios
         ],
     )
+
+    txt_empresa_convenio = ft.TextField(
+        label="Empresa (si es convenio)",
+        width=320,
+        read_only=True,
+        disabled=True,
+        visible=False,
+    )
+
     txt_precio = ft.TextField(label="Precio", width=160, hint_text="Ej: 120000")
     txt_notas = ft.TextField(
         label="Notas internas (opcional)",
@@ -163,9 +262,30 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
     mensaje_error = ft.Text("", color=ft.Colors.RED, visible=False, size=12)
 
+    # --- Manejo de DatePicker para la fecha de la cita ---
+
+    def abrir_datepicker(e):
+        if reserva["fecha"]:
+            date_picker.value = reserva["fecha"]
+        else:
+            date_picker.value = hoy
+        date_picker.open = True
+        page.update()
+
+    def on_fecha_cambiada(e):
+        if date_picker.value:
+            reserva["fecha"] = date_picker.value
+            txt_fecha.value = date_picker.value.strftime("%Y-%m-%d")
+            if txt_fecha.page is not None:
+                txt_fecha.update()
+
+    btn_fecha.on_click = abrir_datepicker
+    txt_fecha.on_tap = abrir_datepicker
+    date_picker.on_change = on_fecha_cambiada
+
     # ----------------- BÚSQUEDA DE PACIENTES (local) -------------------
 
-    def buscar_pacientes_local(texto: str) -> list[dict]:
+    def buscar_pacientes_local(texto: str):
         texto = (texto or "").strip().lower()
         if not texto:
             return []
@@ -234,12 +354,10 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         ficha_paciente.visible = True
 
         resultados_pacientes.controls.clear()
-
         txt_buscar_paciente.value = ""
 
         titulo_reserva.value = f"Reserva de {pac['nombre_completo']}"
 
-        # Solo actualizamos si el diálogo ya está montado
         if ficha_paciente.page is not None:
             ficha_paciente.update()
             resultados_pacientes.update()
@@ -265,28 +383,46 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         txt_precio.value = ""
 
         if not sid:
+            txt_empresa_convenio.value = ""
+            txt_empresa_convenio.visible = False
             if txt_precio.page is not None:
                 txt_precio.update()
+            if txt_empresa_convenio.page is not None:
+                txt_empresa_convenio.update()
             return
 
         srv = next((s for s in servicios if s["id"] == int(sid)), None)
         if not srv:
+            txt_empresa_convenio.value = ""
+            txt_empresa_convenio.visible = False
             if txt_precio.page is not None:
                 txt_precio.update()
+            if txt_empresa_convenio.page is not None:
+                txt_empresa_convenio.update()
             return
 
         reserva["servicio"] = srv
+
         try:
             txt_precio.value = str(int(srv["precio"]))
         except Exception:
             txt_precio.value = str(srv["precio"])
 
+        if srv["tipo"] == "convenio_empresarial":
+            txt_empresa_convenio.value = srv.get("empresa") or ""
+            txt_empresa_convenio.visible = True
+        else:
+            txt_empresa_convenio.value = ""
+            txt_empresa_convenio.visible = False
+
         if txt_precio.page is not None:
             txt_precio.update()
+        if txt_empresa_convenio.page is not None:
+            txt_empresa_convenio.update()
 
     dd_servicios.on_change = seleccionar_servicio
 
-    # ----------------- GUARDAR RESERVA -------------------
+    # ----------------- GUARDAR (CREAR / EDITAR) -------------------
 
     def guardar_reserva(e):
         mensaje_error.visible = False
@@ -328,13 +464,13 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         srv = reserva["servicio"]
         modalidad = srv["tipo"]  # presencial / virtual / convenio_empresarial
 
-        estado = dd_estado.value or "reservado"
+        estado = dd_estado.get_value()
         pagado_flag = 1 if chk_pagado.value else 0
 
         motivo = f"Servicio: {srv['nombre']} - Precio: {precio_final:,.0f}"
         notas = (txt_notas.value or "").strip()
 
-        cita = {
+        datos_cita = {
             "documento_paciente": reserva["paciente"]["documento"],
             "fecha_hora": f"{fecha_str} {hora_str}",
             "modalidad": modalidad,
@@ -342,15 +478,37 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             "notas": notas,
             "estado": estado,
             "pagado": pagado_flag,
+            "precio": precio_final,
         }
 
-        crear_cita(cita)
+        # Validar que no exista otra cita en la misma fecha y hora
+        cita_id_actual = cita_editando_id["value"]
+        if existe_cita_en_fecha(datos_cita["fecha_hora"], cita_id_actual):
+            mensaje_error.value = (
+                "Ya existe una cita en esa fecha y hora. "
+                "Por favor selecciona otra hora."
+            )
+            mensaje_error.visible = True
+            if mensaje_error.page is not None:
+                mensaje_error.update()
+            return
+
+        if cita_editando_id["value"] is None:
+            crear_cita(datos_cita)
+        else:
+            actualizar_cita(cita_editando_id["value"], datos_cita)
 
         dialogo_reserva.open = False
         page.update()
 
+        dibujar_calendario_semanal()
+
         page.snack_bar = ft.SnackBar(
-            content=ft.Text("Reserva creada exitosamente."),
+            content=ft.Text(
+                "Reserva creada exitosamente."
+                if cita_editando_id["value"] is None
+                else "Reserva actualizada."
+            ),
             bgcolor=ft.Colors.GREEN_300,
         )
         page.snack_bar.open = True
@@ -360,14 +518,14 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         dialogo_reserva.open = False
         page.update()
 
-    # ----------------- DIALOGO NUEVA RESERVA -------------------
+    # ----------------- DIALOGO -------------------
 
     dialogo_reserva = ft.AlertDialog(
         modal=True,
         title=titulo_reserva,
         content=ft.Column(
             [
-                txt_fecha,
+                ft.Row([txt_fecha, btn_fecha], spacing=5),
                 ft.Row([dd_hora, dd_min, dd_hora_fin, dd_min_fin], spacing=10),
                 ft.Row([dd_estado, chk_pagado], spacing=10),
                 ft.Divider(),
@@ -376,6 +534,7 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
                 ficha_paciente,
                 ft.Divider(),
                 dd_servicios,
+                txt_empresa_convenio,
                 txt_precio,
                 txt_notas,
                 mensaje_error,
@@ -391,27 +550,20 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         ],
     )
 
-    # ----------------- CLICK EN SLOT (FIX IMPORTANTE) -------------------
+    # ----------------- CLICK EN SLOT (NUEVA CITA) -------------------
 
     def click_slot(dia: date, minuto: int):
-        """
-        Al hacer click en una celda de la agenda:
-          - Configuramos el estado de la reserva
-          - Cargamos fecha/hora en los controles
-          - NO hacemos .update() de controles individuales aquí
-          - Abrimos el diálogo y luego hacemos page.update()
-        """
         h = minuto // 60
         mm = minuto % 60
+
+        cita_editando_id["value"] = None
 
         reserva["fecha"] = dia
         reserva["hora_inicio"] = (h, mm)
         reserva["hora_fin"] = (h + 1, mm)
 
-        # Fecha
         txt_fecha.value = dia.strftime("%Y-%m-%d")
 
-        # Opciones de hora/minuto
         dd_hora.options = [ft.dropdown.Option(f"{x:02d}") for x in range(0, 24)]
         dd_min.options = [ft.dropdown.Option(f"{x:02d}") for x in range(0, 60, 5)]
         dd_hora_fin.options = [ft.dropdown.Option(f"{x:02d}") for x in range(0, 24)]
@@ -422,7 +574,6 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         dd_hora_fin.value = f"{h+1:02d}"
         dd_min_fin.value = f"{mm:02d}"
 
-        # Reset paciente/servicio/notas/errores/estado/pago
         reserva["paciente"] = None
         ficha_paciente.visible = False
         ficha_paciente.controls.clear()
@@ -436,23 +587,133 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         dd_servicios.value = None
         txt_precio.value = ""
         txt_notas.value = ""
+        txt_empresa_convenio.value = ""
+        txt_empresa_convenio.visible = False
 
-        dd_estado.value = "reservado"
+        dd_estado.set_value("reservado")
         chk_pagado.value = False
 
         mensaje_error.value = ""
         mensaje_error.visible = False
 
-        # AHORA sí abrimos el diálogo y actualizamos la página
         page.dialog = dialogo_reserva
         dialogo_reserva.open = True
-        # Mismo patrón que en admin_view
         page.open(dialogo_reserva)
         page.update()
 
-    # ----------------- CELDA DE AGENDA -------------------
+    # ----------------- ABRIR CITA EXISTENTE (EDITAR) -------------------
 
-    def construir_celda(d: date, m: int) -> ft.Container:
+    def parsear_servicio_y_precio(motivo: str):
+        nombre_serv = ""
+        precio = ""
+        if motivo and "Servicio:" in motivo:
+            try:
+                resto = motivo.split("Servicio:", 1)[1].strip()
+                partes = resto.split(" - ")
+                if partes:
+                    nombre_serv = partes[0].replace("Servicio:", "").strip()
+                for p in partes:
+                    if "Precio" in p:
+                        import re
+
+                        precio_num = re.sub(r"[^\d]", "", p)
+                        if precio_num:
+                            precio = precio_num
+                        break
+            except Exception:
+                pass
+        return nombre_serv, precio
+
+    def abrir_editar_cita(cita_row: dict):
+        cita_editando_id["value"] = cita_row["id"]
+
+        dt = datetime.strptime(cita_row["fecha_hora"][:16], "%Y-%m-%d %H:%M")
+        dia = dt.date()
+        h = dt.hour
+        mm = dt.minute
+
+        reserva["fecha"] = dia
+        reserva["hora_inicio"] = (h, mm)
+        reserva["hora_fin"] = (h + 1, mm)
+
+        txt_fecha.value = dia.strftime("%Y-%m-%d")
+
+        dd_hora.options = [ft.dropdown.Option(f"{x:02d}") for x in range(0, 24)]
+        dd_min.options = [ft.dropdown.Option(f"{x:02d}") for x in range(0, 60, 5)]
+        dd_hora_fin.options = [ft.dropdown.Option(f"{x:02d}") for x in range(0, 24)]
+        dd_min_fin.options = [ft.dropdown.Option(f"{x:02d}") for x in range(0, 60, 5)]
+
+        dd_hora.value = f"{h:02d}"
+        dd_min.value = f"{mm:02d}"
+        dd_hora_fin.value = f"{h+1:02d}"
+        dd_min_fin.value = f"{mm:02d}"
+
+        # Paciente (viene ya junto en el SELECT)
+        pac = {
+            "documento": cita_row["documento_paciente"],
+            "nombre_completo": cita_row["nombre_completo"],
+            "telefono": cita_row.get("telefono", ""),
+            "email": cita_row.get("email", ""),
+        }
+        seleccionar_paciente(pac)
+
+        # Servicio y precio desde "motivo"
+        nombre_serv, precio_motivo = parsear_servicio_y_precio(cita_row.get("motivo", ""))
+
+        dd_servicios.value = None
+        reserva["servicio"] = None
+        for s in servicios:
+            if s["nombre"] == nombre_serv:
+                dd_servicios.value = str(s["id"])
+                reserva["servicio"] = s
+                break
+
+        # Actualizar precio y empresa según el servicio
+        seleccionar_servicio(None)
+
+        # Sobrescribir precio con el valor guardado en la cita
+        precio_db = cita_row.get("precio")
+        if precio_db is not None:
+            try:
+                txt_precio.value = str(int(precio_db))
+            except Exception:
+                txt_precio.value = str(precio_db)
+        elif precio_motivo:
+            txt_precio.value = precio_motivo
+
+        estado_raw = (cita_row.get("estado") or "reservado").lower()
+        if estado_raw.startswith("confirm"):
+            dd_estado.set_value("confirmado")
+        elif estado_raw.startswith("no_asist"):
+            dd_estado.set_value("no_asistio")
+        else:
+            dd_estado.set_value("reservado")
+
+        chk_pagado.value = bool(cita_row.get("pagado"))
+
+        txt_notas.value = cita_row.get("notas") or ""
+
+        mensaje_error.value = ""
+        mensaje_error.visible = False
+
+        titulo_reserva.value = f"Reserva de {pac['nombre_completo']}"
+
+        page.dialog = dialogo_reserva
+        dialogo_reserva.open = True
+        page.open(dialogo_reserva)
+        page.update()
+
+    # ----------------- CELDAS / COLORES DE CITA -------------------
+
+    def color_por_estado(estado: str):
+        e = (estado or "").lower()
+        if e.startswith("confirm"):
+            return ft.Colors.AMBER_200
+        if e.startswith("no_asist"):
+            return ft.Colors.RED_200
+        return ft.Colors.LIGHT_BLUE_200  # reservado / agendada / default
+
+    def construir_celda(d: date, m: int, citas_celda: list[dict]) -> ft.Container:
         info = horarios_map.get(d.weekday())
         bgcolor = ft.Colors.GREY_200
 
@@ -464,12 +725,95 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         else:
             bgcolor = ft.Colors.GREY_300
 
+        bloques = []
+        for cita_row in citas_celda:
+            nombre = cita_row["nombre_completo"]
+            estado = cita_row.get("estado") or ""
+            pagado = cita_row.get("pagado")
+            dt = datetime.strptime(cita_row["fecha_hora"][:16], "%Y-%m-%d %H:%M")
+            hora_txt = dt.strftime("%H:%M")
+
+            nombre_serv, _ = parsear_servicio_y_precio(cita_row.get("motivo", ""))
+
+            # Precio: columna numérica > motivo
+            precio_db = cita_row.get("precio")
+            precio_line = ""
+            if precio_db is not None:
+                try:
+                    precio_line = f"{float(precio_db):,.0f}"
+                except Exception:
+                    precio_line = str(precio_db)
+            else:
+                _, precio_motivo = parsear_servicio_y_precio(cita_row.get("motivo", ""))
+                if precio_motivo:
+                    precio_line = precio_motivo
+
+            estado_label = (
+                "Reservado"
+                if estado in ("", "agendada", "reservado")
+                else "Confirmado"
+                if estado.startswith("confirm")
+                else "No asistió"
+                if estado.startswith("no_asist")
+                else estado
+            )
+
+            tooltip_lines = [
+                f"Paciente: {nombre}",
+                f"Servicio: {nombre_serv}" if nombre_serv else "",
+                f"Hora: {hora_txt}",
+                f"Estado: {estado_label}",
+            ]
+            if precio_line:
+                tooltip_lines.append(f"Precio: {precio_line}")
+            tooltip_lines.extend(
+                [
+                    "Pagado" if pagado else "No pagado",
+                    f"Teléfono: {cita_row.get('telefono','')}",
+                    f"Email: {cita_row.get('email','')}",
+                ]
+            )
+            tooltip = "\n".join(filter(None, tooltip_lines))
+
+            bloque = ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Text(
+                            nombre,
+                            size=11,
+                            weight=ft.FontWeight.BOLD,
+                            max_lines=1,
+                            overflow=ft.TextOverflow.ELLIPSIS,
+                        ),
+                        ft.Text(
+                            nombre_serv or cita_row.get("modalidad", ""),
+                            size=10,
+                            max_lines=1,
+                            overflow=ft.TextOverflow.ELLIPSIS,
+                        ),
+                        ft.Text(hora_txt, size=10),
+                    ],
+                    spacing=0,
+                ),
+                bgcolor=color_por_estado(estado),
+                padding=4,
+                border_radius=4,
+                tooltip=tooltip,
+                on_click=lambda e, cr=dict(cita_row): abrir_editar_cita(cr),
+            )
+            bloques.append(bloque)
+
         return ft.Container(
             width=150,
             height=50,
             bgcolor=bgcolor,
             border=ft.border.all(0.5, ft.Colors.GREY_400),
-            alignment=ft.alignment.center,
+            padding=1,
+            content=ft.Column(
+                bloques,
+                spacing=2,
+                expand=True,
+            ),
             on_click=lambda e, dia=d, minuto=m: click_slot(dia, minuto),
         )
 
@@ -481,6 +825,26 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         start_min = START_HOUR * 60
         end_min = END_HOUR * 60
         minutos = list(range(start_min, end_min + 1, intervalo))
+
+        inicio_dt = datetime.combine(dias[0], datetime.min.time())
+        fin_dt = datetime.combine(dias[-1], datetime.max.time())
+        citas_rows = listar_citas_con_paciente_rango(
+            inicio_dt.strftime("%Y-%m-%d %H:%M"),
+            fin_dt.strftime("%Y-%m-%d %H:%M"),
+        )
+        citas_rows = [dict(r) for r in citas_rows]
+
+        citas_por_celda: dict[tuple[date, int], list[dict]] = {}
+        for c in citas_rows:
+            dt = datetime.strptime(c["fecha_hora"][:16], "%Y-%m-%d %H:%M")
+            fecha_d = dt.date()
+            total_min = dt.hour * 60 + dt.minute
+            if total_min < start_min or total_min > end_min:
+                continue
+            slot_idx = (total_min - start_min) // intervalo
+            slot_min = start_min + slot_idx * intervalo
+            key = (fecha_d, slot_min)
+            citas_por_celda.setdefault(key, []).append(c)
 
         filas = []
 
@@ -521,14 +885,14 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
                 )
             ]
             for d in dias:
-                cells.append(construir_celda(d, m))
+                cells.append(construir_celda(d, m, citas_por_celda.get((d, m), [])))
             cells.append(ft.Container(width=10))
             filas.append(ft.Row(cells))
 
         calendario_semanal_col.controls = filas
         page.update()
 
-    # ----------------- MINI CALENDARIO -------------------
+    # ----------------- MINI CALENDARIO Y NAVEGACIÓN -------------------
 
     def dibujar_mini_calendario():
         m = mes_actual["value"]
@@ -594,7 +958,7 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
         filas_semanas = []
         for i in range(0, len(celdas), 7):
-            fila = celdas[i : i + 7]
+            fila = celdas[i: i + 7]
             while len(fila) < 7:
                 fila.append(ft.Container(width=28, height=24))
             filas_semanas.append(
@@ -615,7 +979,7 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         dibujar_calendario_semanal()
         dibujar_mini_calendario()
 
-    # ----------------- NAVEGACIÓN MINI CALENDARIO -------------------
+    # ----------------- CONTROLES MINI CALENDARIO -------------------
 
     today_year = hoy.year
     year_min = today_year - 4
