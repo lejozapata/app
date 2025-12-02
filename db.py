@@ -13,10 +13,11 @@ PRECIOS_MODALIDAD: Dict[str, int] = {
 }
 
 # Estados posibles de una cita.
-# Más adelante podemos agregar: "asiste", "no_asiste", "pendiente", etc.
+# Estos valores se usan en la UI de agenda.
 ESTADOS_CITA: Dict[str, str] = {
-    "agendada": "Agendada",
-    "confirmada": "Confirmada",
+    "reservado": "Reservado",
+    "confirmado": "Confirmado",
+    "no_asistio": "No asistió",
 }
 
 # --------------------------------------------------------------
@@ -45,7 +46,7 @@ def init_db() -> None:
     conn = get_connection()
     cur = conn.cursor()
 
-#######################TABLAS ########################
+    #######################TABLAS ########################
     # Tabla de pacientes
     cur.execute(
         """
@@ -70,7 +71,7 @@ def init_db() -> None:
         """
     )
 
-    # Tabla de citas
+     # Tabla de citas
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS citas (
@@ -81,10 +82,19 @@ def init_db() -> None:
             motivo TEXT,
             notas TEXT,
             estado TEXT,
+            pagado INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (documento_paciente) REFERENCES pacientes (documento)
         );
         """
     )
+
+    # Asegurar columna 'pagado' para bases de datos ya existentes
+    cur.execute("PRAGMA table_info(citas);")
+    columnas_citas = [row[1] for row in cur.fetchall()]
+    if "pagado" not in columnas_citas:
+        cur.execute(
+            "ALTER TABLE citas ADD COLUMN pagado INTEGER NOT NULL DEFAULT 0;"
+        )
 
     # Tabla de antecedentes médicos
     cur.execute(
@@ -452,11 +462,17 @@ def crear_cita(cita: Dict[str, Any]) -> int:
       - modalidad (str: 'virtual' | 'presencial' | 'convenio_empresarial')
       - motivo (str, opcional)
       - notas (str, opcional)
-      - estado (str: 'agendada', 'confirmada', etc.)
+      - estado (str: 'reservado', 'confirmado', 'no_asistio', etc.)
+      - pagado (int: 0 o 1, opcional -> default 0)
     Devuelve el ID autogenerado de la cita.
     """
     conn = get_connection()
     cur = conn.cursor()
+
+    datos = dict(cita)
+    # Compatibilidad: si no viene pagado en el dict, se asume 0 (no pagado)
+    if "pagado" not in datos:
+        datos["pagado"] = 0
 
     cur.execute(
         """
@@ -466,17 +482,19 @@ def crear_cita(cita: Dict[str, Any]) -> int:
             modalidad,
             motivo,
             notas,
-            estado
+            estado,
+            pagado
         ) VALUES (
             :documento_paciente,
             :fecha_hora,
             :modalidad,
             :motivo,
             :notas,
-            :estado
+            :estado,
+            :pagado
         );
         """,
-        cita,
+        datos,
     )
 
     cita_id = cur.lastrowid
