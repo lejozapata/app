@@ -495,8 +495,10 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
         if cita_editando_id["value"] is None:
             crear_cita(datos_cita)
+            mensaje_snack = "Reserva creada exitosamente."
         else:
             actualizar_cita(cita_editando_id["value"], datos_cita)
+            mensaje_snack = "Reserva actualizada."
 
         dialogo_reserva.open = False
         page.update()
@@ -504,11 +506,7 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         dibujar_calendario_semanal()
 
         page.snack_bar = ft.SnackBar(
-            content=ft.Text(
-                "Reserva creada exitosamente."
-                if cita_editando_id["value"] is None
-                else "Reserva actualizada."
-            ),
+            content=ft.Text(mensaje_snack),
             bgcolor=ft.Colors.GREEN_300,
         )
         page.snack_bar.open = True
@@ -518,34 +516,116 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         dialogo_reserva.open = False
         page.update()
 
+    # ----------------- CONTENIDO PRINCIPAL DEL DIÁLOGO -------------------
+
+    contenido_reserva = ft.Column(
+        [
+            ft.Row([txt_fecha, btn_fecha], spacing=5),
+            ft.Row([dd_hora, dd_min, dd_hora_fin, dd_min_fin], spacing=10),
+            ft.Row([dd_estado, chk_pagado], spacing=10),
+            ft.Divider(),
+            txt_buscar_paciente,
+            resultados_pacientes,
+            ficha_paciente,
+            ft.Divider(),
+            dd_servicios,
+            txt_empresa_convenio,
+            txt_precio,
+            txt_notas,
+            mensaje_error,
+        ],
+        tight=True,
+        spacing=10,
+        scroll=ft.ScrollMode.AUTO,
+        height=500,
+    )
+
+    # ----------------- LÓGICA DE CONFIRMACIÓN DE CANCELACIÓN -------------------
+
+    # Estas funciones usan dialogo_reserva, que se define unas líneas más abajo.
+    def restaurar_dialogo_reserva():
+        """Restaura el contenido normal del diálogo de edición/creación de cita."""
+        dialogo_reserva.title = titulo_reserva
+        dialogo_reserva.content = contenido_reserva
+        dialogo_reserva.actions = [
+        ft.TextButton("Cerrar", on_click=cerrar_dialogo),
+        ft.TextButton(
+            "Cancelar cita",
+            on_click=mostrar_confirmacion_cancelar,
+        ),
+        ft.ElevatedButton("Guardar reserva", on_click=guardar_reserva),
+        ]
+
+        # Solo actualizamos si el diálogo ya está agregado a la página
+        if dialogo_reserva.page is not None:
+            dialogo_reserva.update()
+
+
+    def ejecutar_cancelacion():
+        """Ejecuta realmente la cancelación (eliminación) de la cita."""
+        if cita_editando_id["value"] is not None:
+            eliminar_cita(cita_editando_id["value"])
+
+        dialogo_reserva.open = False
+        page.update()
+
+        dibujar_calendario_semanal()
+
+        page.snack_bar = ft.SnackBar(
+            content=ft.Text("La cita ha sido cancelada."),
+            bgcolor=ft.Colors.RED_300,
+        )
+        page.snack_bar.open = True
+        page.update()
+
+    def mostrar_confirmacion_cancelar(e=None):
+        """
+        Si es cita nueva: actúa como "cerrar".
+        Si es cita existente: reemplaza el contenido del diálogo por una confirmación.
+        """
+        # Cita nueva -> no hay nada que cancelar, solo cerrar
+        if cita_editando_id["value"] is None:
+            cerrar_dialogo()
+            return
+
+        dialogo_reserva.title = ft.Text("Confirmar cancelación")
+
+        dialogo_reserva.content = ft.Column(
+            [
+                ft.Text(
+                    "¿Seguro que deseas cancelar esta cita?\n"
+                    "Esta acción no se puede deshacer."
+                ),
+            ],
+            height=120,
+        )
+
+        dialogo_reserva.actions = [
+            ft.TextButton(
+                "No",
+                on_click=lambda ev: restaurar_dialogo_reserva(),
+            ),
+            ft.TextButton(
+                "Sí, cancelar",
+                on_click=lambda ev: ejecutar_cancelacion(),
+            ),
+        ]
+
+        if dialogo_reserva.page is not None:
+            dialogo_reserva.update()
+
     # ----------------- DIALOGO -------------------
 
     dialogo_reserva = ft.AlertDialog(
         modal=True,
         title=titulo_reserva,
-        content=ft.Column(
-            [
-                ft.Row([txt_fecha, btn_fecha], spacing=5),
-                ft.Row([dd_hora, dd_min, dd_hora_fin, dd_min_fin], spacing=10),
-                ft.Row([dd_estado, chk_pagado], spacing=10),
-                ft.Divider(),
-                txt_buscar_paciente,
-                resultados_pacientes,
-                ficha_paciente,
-                ft.Divider(),
-                dd_servicios,
-                txt_empresa_convenio,
-                txt_precio,
-                txt_notas,
-                mensaje_error,
-            ],
-            tight=True,
-            spacing=10,
-            scroll=ft.ScrollMode.AUTO,
-            height=500,
-        ),
+        content=contenido_reserva,
         actions=[
-            ft.TextButton("Cancelar", on_click=cerrar_dialogo),
+            ft.TextButton("Cerrar", on_click=cerrar_dialogo),
+            ft.TextButton(
+                "Cancelar cita",
+                on_click=mostrar_confirmacion_cancelar,
+            ),
             ft.ElevatedButton("Guardar reserva", on_click=guardar_reserva),
         ],
     )
@@ -595,6 +675,9 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
         mensaje_error.value = ""
         mensaje_error.visible = False
+
+        # Aseguramos que el diálogo esté en modo "edición normal"
+        restaurar_dialogo_reserva()
 
         page.dialog = dialogo_reserva
         dialogo_reserva.open = True
@@ -697,6 +780,9 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         mensaje_error.visible = False
 
         titulo_reserva.value = f"Reserva de {pac['nombre_completo']}"
+
+        # Aseguramos que el diálogo esté en modo "edición normal"
+        restaurar_dialogo_reserva()
 
         page.dialog = dialogo_reserva
         dialogo_reserva.open = True

@@ -177,6 +177,17 @@ def init_db() -> None:
             (d,),
         )
 
+    # Tabla de bloqueos de agenda (bloqueo de horario sin paciente)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS bloqueos_agenda (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            motivo TEXT NOT NULL,
+            fecha_hora TEXT NOT NULL    -- 'YYYY-MM-DD HH:MM'
+        );
+        """
+    )
+
 
     conn.commit()
     conn.close()
@@ -636,7 +647,128 @@ def eliminar_cita(cita_id: int) -> None:
     conn.close()
 
 
+
+
 # ================== FIN C I T A S ====================
+
+
+
+# ===================== B L O Q U E O S   A G E N D A =====================
+
+def crear_bloqueo(bloqueo: Dict[str, Any]) -> int:
+    """
+    Crea un bloqueo de horario.
+    Espera:
+      - motivo (str)
+      - fecha_hora (str: 'YYYY-MM-DD HH:MM')
+    Devuelve el id autogenerado.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    datos = dict(bloqueo)
+    cur.execute(
+        """
+        INSERT INTO bloqueos_agenda (
+            motivo,
+            fecha_hora
+        ) VALUES (
+            :motivo,
+            :fecha_hora
+        );
+        """,
+        datos,
+    )
+
+    bloqueo_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return bloqueo_id
+
+
+def listar_bloqueos_rango(fecha_inicio: str, fecha_fin: str) -> List[Any]:
+    """
+    Lista bloqueos entre dos fechas/horas (inclusive), ordenados por fecha_hora.
+    Formato de fechas: 'YYYY-MM-DD HH:MM'
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT *
+        FROM bloqueos_agenda
+        WHERE fecha_hora >= ? AND fecha_hora <= ?
+        ORDER BY fecha_hora;
+        """,
+        (fecha_inicio, fecha_fin),
+    )
+
+    filas = cur.fetchall()
+    conn.close()
+    return filas
+
+
+def actualizar_bloqueo(bloqueo_id: int, datos: Dict[str, Any]) -> None:
+    """
+    Actualiza un bloqueo (solo motivo y fecha_hora por ahora).
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    params = dict(datos)
+    params["id"] = bloqueo_id
+
+    cur.execute(
+        """
+        UPDATE bloqueos_agenda
+        SET motivo = :motivo,
+            fecha_hora = :fecha_hora
+        WHERE id = :id;
+        """,
+        params,
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def eliminar_bloqueo(bloqueo_id: int) -> None:
+    """Elimina un bloqueo de agenda."""
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        "DELETE FROM bloqueos_agenda WHERE id = ?;",
+        (bloqueo_id,),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def existe_bloqueo_en_fecha(fecha_hora: str, bloqueo_id_excluir: Optional[int] = None) -> bool:
+    """
+    Devuelve True si ya existe un bloqueo exactamente en esa fecha_hora.
+    Si bloqueo_id_excluir no es None, se excluye ese id (útil en edición).
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    if bloqueo_id_excluir is None:
+        cur.execute(
+            "SELECT COUNT(*) FROM bloqueos_agenda WHERE fecha_hora = ?;",
+            (fecha_hora,),
+        )
+    else:
+        cur.execute(
+            "SELECT COUNT(*) FROM bloqueos_agenda WHERE fecha_hora = ? AND id != ?;",
+            (fecha_hora, bloqueo_id_excluir),
+        )
+
+    count = cur.fetchone()[0]
+    conn.close()
+    return count > 0
 
 # ------------ CONFIGURACIÓN PROFESIONAL -------------
 
