@@ -11,6 +11,11 @@ from db import (
     actualizar_cita,
     eliminar_cita,
     existe_cita_en_fecha,
+    crear_bloqueo,
+    listar_bloqueos_rango,
+    actualizar_bloqueo,
+    eliminar_bloqueo,
+    existe_bloqueo_en_fecha,
 )
 
 # ---------------------------------------------------------
@@ -124,6 +129,21 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
     }
 
     cita_editando_id = {"value": None}  # None = nueva, int = editar cita existente
+
+    # Estado para bloqueos de agenda
+    bloqueo_editando_id = {"value": None}  # None = nuevo, int = editar bloqueo existente
+
+    # Último slot clickeado (se usa para saber dónde crear reserva o bloqueo)
+    slot_actual = {
+        "fecha": None,   # date
+        "minuto": None,  # minutos desde medianoche
+    }
+
+     # Slot seleccionado para mostrar el botón "+ Agregar"
+    slot_agregar = {
+        "fecha": None,   # date
+        "minuto": None,  # minutos desde medianoche
+    }
 
     # --- Controles del diálogo ---
 
@@ -493,6 +513,17 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
                 mensaje_error.update()
             return
 
+        # Validar que no exista un BLOQUEO de horario en esa fecha y hora
+        if existe_bloqueo_en_fecha(datos_cita["fecha_hora"], None):
+            mensaje_error.value = (
+                "Este horario está bloqueado en la agenda. "
+                "Elimina o mueve el bloqueo antes de agendar un paciente."
+            )
+            mensaje_error.visible = True
+            if mensaje_error.page is not None:
+                mensaje_error.update()
+            return
+
         if cita_editando_id["value"] is None:
             crear_cita(datos_cita)
             mensaje_snack = "Reserva creada exitosamente."
@@ -544,17 +575,27 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
     # Estas funciones usan dialogo_reserva, que se define unas líneas más abajo.
     def restaurar_dialogo_reserva():
-        """Restaura el contenido normal del diálogo de edición/creación de cita."""
         dialogo_reserva.title = titulo_reserva
         dialogo_reserva.content = contenido_reserva
-        dialogo_reserva.actions = [
-        ft.TextButton("Cerrar", on_click=cerrar_dialogo),
-        ft.TextButton(
-            "Cancelar cita",
-            on_click=mostrar_confirmacion_cancelar,
-        ),
-        ft.ElevatedButton("Guardar reserva", on_click=guardar_reserva),
-        ]
+
+        # Si es una cita nueva (sin id) NO mostramos "Cancelar cita"
+        if cita_editando_id["value"] is None:
+            dialogo_reserva.actions = [
+                ft.TextButton("Cerrar", on_click=cerrar_dialogo),
+                ft.ElevatedButton("Guardar reserva", on_click=guardar_reserva),
+            ]
+        else:
+            dialogo_reserva.actions = [
+                ft.TextButton("Cerrar", on_click=cerrar_dialogo),
+                ft.TextButton(
+                    "Cancelar cita",
+                    on_click=mostrar_confirmacion_cancelar,
+                ),
+                ft.ElevatedButton("Guardar reserva", on_click=guardar_reserva),
+            ]
+
+        if dialogo_reserva.page is not None:
+            dialogo_reserva.update()
 
         # Solo actualizamos si el diálogo ya está agregado a la página
         if dialogo_reserva.page is not None:
@@ -614,6 +655,234 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         if dialogo_reserva.page is not None:
             dialogo_reserva.update()
 
+    # ----------------- DIÁLOGO DE BLOQUEO DE HORARIO -------------------
+
+    titulo_bloqueo = ft.Text("Bloquear horario", size=20, weight="bold")
+
+    # Mostramos el horario en un solo campo de texto, solo lectura
+    txt_bloqueo_fecha_hora = ft.TextField(
+        label="Horario",
+        width=250,
+        read_only=True,
+    )
+
+    txt_bloqueo_motivo = ft.TextField(
+        label="Motivo / etiqueta",
+        width=400,
+        multiline=True,
+        min_lines=2,
+        max_lines=4,
+    )
+
+    mensaje_error_bloqueo = ft.Text("", color=ft.Colors.RED, visible=False, size=12)
+
+
+    def cerrar_dialogo_bloqueo(e=None):
+        dialogo_bloqueo.open = False
+        page.update()
+
+    def preparar_bloqueo_nuevo():
+        """Prepara el diálogo para crear un nuevo bloqueo en el slot_actual."""
+        bloqueo_editando_id["value"] = None
+        mensaje_error_bloqueo.value = ""
+        mensaje_error_bloqueo.visible = False
+        txt_bloqueo_motivo.value = ""
+
+        dia = slot_actual["fecha"]
+        minuto = slot_actual["minuto"]
+
+        if dia is None or minuto is None:
+            # fallback raro, pero evitamos crashear
+            ahora = datetime.now()
+            dia = ahora.date()
+            minuto = ahora.hour * 60 + ahora.minute
+
+        h = minuto // 60
+        mm = minuto % 60
+
+        txt_bloqueo_fecha_hora.value = f"{dia.strftime('%Y-%m-%d')} {h:02d}:{mm:02d}"
+        titulo_bloqueo.value = "Bloquear horario"
+        actualizar_acciones_dialogo_bloqueo()
+
+    def abrir_dialogo_bloqueo_nuevo():
+        """Abre el diálogo de bloqueo para el slot_actual."""
+        preparar_bloqueo_nuevo()
+        page.dialog = dialogo_bloqueo
+        dialogo_bloqueo.open = True
+        page.open(dialogo_bloqueo)
+        page.update()
+
+    def abrir_editar_bloqueo(bloq_row: dict):
+        """Abre el diálogo para editar un bloqueo existente."""
+        bloqueo_editando_id["value"] = bloq_row["id"]
+        titulo_bloqueo.value = "Editar bloqueo de horario"
+
+        txt_bloqueo_fecha_hora.value = bloq_row["fecha_hora"][:16]
+        txt_bloqueo_motivo.value = bloq_row.get("motivo", "")
+
+        mensaje_error_bloqueo.value = ""
+        mensaje_error_bloqueo.visible = False
+
+        actualizar_acciones_dialogo_bloqueo()
+
+        page.dialog = dialogo_bloqueo
+        dialogo_bloqueo.open = True
+        page.open(dialogo_bloqueo)
+        page.update()
+
+    def guardar_bloqueo(e=None):
+        """Crea o actualiza un bloqueo."""
+        mensaje_error_bloqueo.visible = False
+        mensaje_error_bloqueo.value = ""
+
+        motivo = (txt_bloqueo_motivo.value or "").strip()
+        if not motivo:
+            mensaje_error_bloqueo.value = "Debes ingresar un motivo para el bloqueo."
+            mensaje_error_bloqueo.visible = True
+            if mensaje_error_bloqueo.page is not None:
+                mensaje_error_bloqueo.update()
+            return
+
+        fecha_hora_str = txt_bloqueo_fecha_hora.value.strip()
+        if not fecha_hora_str:
+            mensaje_error_bloqueo.value = "Horario inválido."
+            mensaje_error_bloqueo.visible = True
+            if mensaje_error_bloqueo.page is not None:
+                mensaje_error_bloqueo.update()
+            return
+
+        # Validación: no debe haber otra cita en ese slot
+        if existe_cita_en_fecha(fecha_hora_str, None):
+            mensaje_error_bloqueo.value = (
+                "Ya existe una cita en este horario. "
+                "No se puede crear un bloqueo aquí."
+            )
+            mensaje_error_bloqueo.visible = True
+            if mensaje_error_bloqueo.page is not None:
+                mensaje_error_bloqueo.update()
+            return
+
+        if bloqueo_editando_id["value"] is None:
+            # Validar también que no haya OTRO bloqueo en ese slot
+            if existe_bloqueo_en_fecha(fecha_hora_str, None):
+                mensaje_error_bloqueo.value = (
+                    "Ya existe un bloqueo en este horario."
+                )
+                mensaje_error_bloqueo.visible = True
+                if mensaje_error_bloqueo.page is not None:
+                    mensaje_error_bloqueo.update()
+                return
+
+            crear_bloqueo(
+                {
+                    "motivo": motivo,
+                    "fecha_hora": fecha_hora_str,
+                }
+            )
+            msg_snack = "Bloqueo creado."
+        else:
+            # En edición no cambiamos el horario (solo motivo),
+            # por lo que no es necesario validar de nuevo contra otros bloqueos.
+            actualizar_bloqueo(
+                bloqueo_editando_id["value"],
+                {
+                    "motivo": motivo,
+                    "fecha_hora": fecha_hora_str,
+                },
+            )
+            msg_snack = "Bloqueo actualizado."
+
+        dialogo_bloqueo.open = False
+        page.update()
+
+        dibujar_calendario_semanal()
+
+        page.snack_bar = ft.SnackBar(
+            content=ft.Text(msg_snack),
+            bgcolor=ft.Colors.GREY_300,
+        )
+        page.snack_bar.open = True
+        page.update()
+
+    def confirmar_eliminar_bloqueo(e=None):
+        """Muestra confirmación antes de eliminar un bloqueo."""
+        if bloqueo_editando_id["value"] is None:
+            # Si es nuevo y no hay nada guardado, simplemente cerramos
+            cerrar_dialogo_bloqueo()
+            return
+
+        def cancelar(ev=None):
+            dialog_confirm.open = False
+            page.update()
+
+        def confirmar(ev=None):
+            eliminar_bloqueo(bloqueo_editando_id["value"])
+            dialog_confirm.open = False
+            page.update()
+
+            dibujar_calendario_semanal()
+
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text("Bloqueo eliminado."),
+                bgcolor=ft.Colors.RED_300,
+            )
+            page.snack_bar.open = True
+            page.update()
+
+        dialog_confirm = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Eliminar bloqueo"),
+            content=ft.Text(
+                "¿Seguro que deseas eliminar este bloqueo de horario?\n"
+                "Esta acción no se puede deshacer."
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=cancelar),
+                ft.TextButton("Eliminar", on_click=confirmar),
+            ],
+        )
+
+        # Abrir diálogo de confirmación (cierra el de bloqueo mientras tanto)
+        page.open(dialog_confirm)
+    
+    def actualizar_acciones_dialogo_bloqueo():
+        """Configura los botones del diálogo de bloqueo según si es nuevo o edición."""
+        if bloqueo_editando_id["value"] is None:
+            # Nuevo bloqueo: solo cerrar y guardar
+            dialogo_bloqueo.actions = [
+                ft.TextButton("Cerrar", on_click=cerrar_dialogo_bloqueo),
+                ft.ElevatedButton("Guardar bloqueo", on_click=guardar_bloqueo),
+            ]
+        else:
+            # Edición: permitir eliminar
+            dialogo_bloqueo.actions = [
+                ft.TextButton("Cerrar", on_click=cerrar_dialogo_bloqueo),
+                ft.TextButton(
+                    "Cancelar bloqueo",
+                    on_click=confirmar_eliminar_bloqueo,
+                ),
+                ft.ElevatedButton("Guardar bloqueo", on_click=guardar_bloqueo),
+            ]
+
+        if dialogo_bloqueo.page is not None:
+            dialogo_bloqueo.update()
+
+    dialogo_bloqueo = ft.AlertDialog(
+        modal=True,
+        title=titulo_bloqueo,
+        content=ft.Column(
+            [
+                txt_bloqueo_fecha_hora,
+                txt_bloqueo_motivo,
+                mensaje_error_bloqueo,
+            ],
+            spacing=10,
+            tight=True,
+        ),
+        actions=[],  # se llenan dinámicamente por actualizar_acciones_dialogo_bloqueo()
+    )
+
+
     # ----------------- DIALOGO -------------------
 
     dialogo_reserva = ft.AlertDialog(
@@ -632,7 +901,8 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
     # ----------------- CLICK EN SLOT (NUEVA CITA) -------------------
 
-    def click_slot(dia: date, minuto: int):
+    def preparar_reserva_para_slot(dia: date, minuto: int):
+        """Configura el estado de la reserva para el slot indicado, pero no abre el diálogo."""
         h = minuto // 60
         mm = minuto % 60
 
@@ -676,13 +946,136 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         mensaje_error.value = ""
         mensaje_error.visible = False
 
-        # Aseguramos que el diálogo esté en modo "edición normal"
+    def abrir_reserva_nueva_desde_slot(e=None):
+        dia = slot_actual["fecha"]
+        minuto = slot_actual["minuto"]
+        if dia is None or minuto is None:
+            return
+
+        preparar_reserva_para_slot(dia, minuto)
+
+        # aseguramos estado normal del diálogo de reserva
         restaurar_dialogo_reserva()
 
         page.dialog = dialogo_reserva
         dialogo_reserva.open = True
         page.open(dialogo_reserva)
         page.update()
+
+    def abrir_bloqueo_desde_slot(e=None):
+        dia = slot_actual["fecha"]
+        minuto = slot_actual["minuto"]
+        if dia is None or minuto is None:
+            return
+
+        preparar_bloqueo_nuevo()
+
+        page.dialog = dialogo_bloqueo
+        dialogo_bloqueo.open = True
+        page.open(dialogo_bloqueo)
+        page.update()
+
+    def cerrar_dialogo_opcion_slot(e=None):
+        dialogo_opcion_slot.open = False
+        page.update()
+
+    dialogo_opcion_slot = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Agregar"),
+        content=ft.Text("¿Qué deseas agregar en este horario?"),
+        actions=[
+            ft.TextButton("Reserva", on_click=lambda e: (cerrar_dialogo_opcion_slot(), abrir_reserva_nueva_desde_slot())),
+            ft.TextButton("Bloquear horario", on_click=lambda e: (cerrar_dialogo_opcion_slot(), abrir_bloqueo_desde_slot())),
+            ft.TextButton("Cerrar", on_click=cerrar_dialogo_opcion_slot),
+        ],
+    )
+
+
+    # def click_slot(dia: date, minuto: int):
+    #     # Guardamos el slot en estado global
+    #     slot_actual["fecha"] = dia
+    #     slot_actual["minuto"] = minuto
+
+    #     page.dialog = dialogo_opcion_slot
+    #     dialogo_opcion_slot.open = True
+    #     page.open(dialogo_opcion_slot)
+    #     page.update()
+
+    def click_slot(dia: date, minuto: int):
+        # Si vuelven a hacer clic en el mismo slot, lo limpiamos
+        if slot_agregar["fecha"] == dia and slot_agregar["minuto"] == minuto:
+            limpiar_slot_agregar()
+        else:
+            slot_agregar["fecha"] = dia
+            slot_agregar["minuto"] = minuto
+
+        dibujar_calendario_semanal()
+
+    def preparar_reserva_para_slot(dia: date, minuto: int):
+        h = minuto // 60
+        mm = minuto % 60
+
+        cita_editando_id["value"] = None
+
+        reserva["fecha"] = dia
+        reserva["hora_inicio"] = (h, mm)
+        reserva["hora_fin"] = (h + 1, mm)
+
+        txt_fecha.value = dia.strftime("%Y-%m-%d")
+
+        dd_hora.options = [ft.dropdown.Option(f"{x:02d}") for x in range(0, 24)]
+        dd_min.options = [ft.dropdown.Option(f"{x:02d}") for x in range(0, 60, 5)]
+        dd_hora_fin.options = [ft.dropdown.Option(f"{x:02d}") for x in range(0, 24)]
+        dd_min_fin.options = [ft.dropdown.Option(f"{x:02d}") for x in range(0, 60, 5)]
+
+        dd_hora.value = f"{h:02d}"
+        dd_min.value = f"{mm:02d}"
+        dd_hora_fin.value = f"{h+1:02d}"
+        dd_min_fin.value = f"{mm:02d}"
+
+        reserva["paciente"] = None
+        ficha_paciente.visible = False
+        ficha_paciente.controls.clear()
+
+        titulo_reserva.value = "Nueva reserva"
+
+        txt_buscar_paciente.value = ""
+        resultados_pacientes.controls.clear()
+
+        reserva["servicio"] = None
+        dd_servicios.value = None
+        txt_precio.value = ""
+        txt_notas.value = ""
+        txt_empresa_convenio.value = ""
+        txt_empresa_convenio.visible = False
+
+        dd_estado.set_value("reservado")
+        chk_pagado.value = False
+
+        mensaje_error.value = ""
+        mensaje_error.visible = False
+
+    def abrir_reserva_nueva_desde_slot(dia: date, minuto: int):
+        preparar_reserva_para_slot(dia, minuto)
+        # aseguramos estado normal del diálogo de reserva
+        restaurar_dialogo_reserva()
+        page.dialog = dialogo_reserva
+        dialogo_reserva.open = True
+        page.open(dialogo_reserva)
+        page.update()
+
+    def abrir_bloqueo_desde_slot(dia: date, minuto: int):
+        slot_actual["fecha"] = dia
+        slot_actual["minuto"] = minuto
+        preparar_bloqueo_nuevo()
+        page.dialog = dialogo_bloqueo
+        dialogo_bloqueo.open = True
+        page.open(dialogo_bloqueo)
+        page.update()
+
+    def limpiar_slot_agregar():
+        slot_agregar["fecha"] = None
+        slot_agregar["minuto"] = None
 
     # ----------------- ABRIR CITA EXISTENTE (EDITAR) -------------------
 
@@ -798,8 +1191,24 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         if e.startswith("no_asist"):
             return ft.Colors.RED_200
         return ft.Colors.LIGHT_BLUE_200  # reservado / agendada / default
+    
+    def color_borde_por_estado(estado: str):
+        e = (estado or "").lower()
+        if e.startswith("confirm"):
+            # un poco más oscuro que el fondo amarillo
+            return ft.Colors.AMBER_400
+        if e.startswith("no_asist"):
+            # más oscuro que el rojo claro
+            return ft.Colors.RED_400
+        # reservado / default (azul)
+        return ft.Colors.LIGHT_BLUE_400
 
-    def construir_celda(d: date, m: int, citas_celda: list[dict]) -> ft.Container:
+    def construir_celda(
+        d: date,
+        m: int,
+        citas_celda: list[dict],
+        bloqueos_celda: list[dict],
+    ) -> ft.Container:
         info = horarios_map.get(d.weekday())
         bgcolor = ft.Colors.GREY_200
 
@@ -880,28 +1289,159 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
                         ft.Text(hora_txt, size=10),
                     ],
                     spacing=0,
+                    expand=True,  # ocupa la altura del contenedor
                 ),
                 bgcolor=color_por_estado(estado),
-                padding=4,
-                border_radius=4,
+                padding=6,
+                border_radius=6,
+                alignment=ft.alignment.center_left,
                 tooltip=tooltip,
+                expand=True,  # hace que la cita “llene” casi todo el slot
+                border=ft.border.only(
+                    left=ft.BorderSide(4, color_borde_por_estado(estado)),
+                ),
                 on_click=lambda e, cr=dict(cita_row): abrir_editar_cita(cr),
             )
             bloques.append(bloque)
 
-        return ft.Container(
-            width=150,
-            height=50,
-            bgcolor=bgcolor,
-            border=ft.border.all(0.5, ft.Colors.GREY_400),
-            padding=1,
+              # ---- Bloqueos de horario en este slot ----
+        for bloq in bloqueos_celda or []:
+            dtb = datetime.strptime(bloq["fecha_hora"][:16], "%Y-%m-%d %H:%M")
+            hora_txt = dtb.strftime("%H:%M")
+            motivo = bloq.get("motivo", "")
+
+            tooltip_bloq = f"Bloqueo de horario\n{hora_txt}\n{motivo}"
+
+            bloque_bloq = ft.Container(
             content=ft.Column(
-                bloques,
-                spacing=2,
+                [
+                    ft.Text(
+                        hora_txt,
+                        size=10,
+                        weight=ft.FontWeight.BOLD,
+                    ),
+                    ft.Text(
+                        motivo,
+                        size=10,
+                        max_lines=2,
+                        overflow=ft.TextOverflow.ELLIPSIS,
+                    ),
+                ],
+                spacing=0,
                 expand=True,
             ),
-            on_click=lambda e, dia=d, minuto=m: click_slot(dia, minuto),
+            bgcolor=ft.Colors.GREY_400,  # más oscuro para que resalte
+            padding=4,
+            border_radius=6,
+            opacity=0.95,
+            border=ft.border.only(
+                left=ft.BorderSide(4, ft.Colors.BLACK54),
+            ),
+            alignment=ft.alignment.center_left,
+            tooltip=tooltip_bloq,
+            expand=True,  # hace que el bloqueo use casi toda la celda
+            on_click=lambda e, br=dict(bloq): abrir_editar_bloqueo(br),
         )
+            bloques.append(bloque_bloq)
+
+    # Si hay bloqueos en este slot, el fondo NO debe ser clickeable
+    # (solo se puede interactuar con el bloqueo mismo)
+        if bloqueos_celda:
+            cell_on_click = None
+        else:
+            cell_on_click = lambda e, dia=d, minuto=m: click_slot(dia, minuto)
+
+     # --------- Slot vacío seleccionado para agregar ---------
+        es_slot_agregar = (
+            not citas_celda
+            and not bloqueos_celda
+            and slot_agregar["fecha"] == d
+            and slot_agregar["minuto"] == m
+        )
+
+        if es_slot_agregar:
+            def on_reserva(e):
+                limpiar_slot_agregar()
+                abrir_reserva_nueva_desde_slot(d, m)
+
+            def on_bloqueo(e):
+                limpiar_slot_agregar()
+                abrir_bloqueo_desde_slot(d, m)
+
+            def on_cerrar(e=None):
+                limpiar_slot_agregar()
+                dibujar_calendario_semanal()
+
+            popup_agregar = ft.PopupMenuButton(
+                content=ft.Row(
+                    [
+                        ft.Icon(ft.Icons.ADD, size=14),
+                        ft.Text(
+                            "Agregar",
+                            size=12,
+                            color=ft.Colors.BLUE_700,
+                            weight=ft.FontWeight.W_500,
+                        ),
+                    ],
+                    spacing=4,
+                    tight=True,
+                ),
+                items=[
+                    ft.PopupMenuItem(
+                        icon=ft.Icons.EVENT,
+                        text="Reserva",
+                        on_click=on_reserva,
+                    ),
+                    ft.PopupMenuItem(
+                        icon=ft.Icons.BLOCK,
+                        text="Bloquear horario",
+                        on_click=on_bloqueo,
+                    ),
+                ],
+            )
+
+            btn_cerrar = ft.IconButton(
+                icon=ft.Icons.CLOSE,
+                icon_size=14,
+                tooltip="Cerrar",
+                style=ft.ButtonStyle(
+                    padding=0,
+                    shape=ft.CircleBorder(),
+                ),
+                on_click=on_cerrar,
+            )
+
+            return ft.Container(
+                width=160,   # el mismo ancho que el resto de slots
+                height=50,
+                bgcolor=bgcolor,
+                border=ft.border.all(0.5, ft.Colors.GREY_400),
+                padding=4,
+                content=ft.Row(
+                    [
+                        popup_agregar,
+                        btn_cerrar,
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+            )
+
+
+
+        return ft.Container(
+        width=160,
+        height=50,
+        bgcolor=bgcolor,
+        border=ft.border.all(0.5, ft.Colors.GREY_400),
+        padding=1,
+        content=ft.Column(
+            bloques,
+            spacing=2,
+            expand=True,
+        ),
+        on_click=cell_on_click,
+    )
 
     # ----------------- AGENDA SEMANAL -------------------
 
@@ -919,6 +1459,25 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             fin_dt.strftime("%Y-%m-%d %H:%M"),
         )
         citas_rows = [dict(r) for r in citas_rows]
+
+         # --------- Bloqueos en el mismo rango ---------
+        bloqueos_rows = listar_bloqueos_rango(
+            inicio_dt.strftime("%Y-%m-%d %H:%M"),
+            fin_dt.strftime("%Y-%m-%d %H:%M"),
+        )
+        bloqueos_rows = [dict(b) for b in bloqueos_rows]
+
+        bloqueos_por_celda: dict[tuple[date, int], list[dict]] = {}
+        for b in bloqueos_rows:
+            dtb = datetime.strptime(b["fecha_hora"][:16], "%Y-%m-%d %H:%M")
+            fecha_d = dtb.date()
+            total_min = dtb.hour * 60 + dtb.minute
+            if total_min < start_min or total_min > end_min:
+                continue
+            slot_idx = (total_min - start_min) // intervalo
+            slot_min = start_min + slot_idx * intervalo
+            key = (fecha_d, slot_min)
+            bloqueos_por_celda.setdefault(key, []).append(b)
 
         citas_por_celda: dict[tuple[date, int], list[dict]] = {}
         for c in citas_rows:
@@ -971,7 +1530,14 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
                 )
             ]
             for d in dias:
-                cells.append(construir_celda(d, m, citas_por_celda.get((d, m), [])))
+                cells.append(
+                    construir_celda(
+                        d,
+                        m,
+                        citas_por_celda.get((d, m), []),
+                        bloqueos_por_celda.get((d, m), []),
+                    )
+                )
             cells.append(ft.Container(width=10))
             filas.append(ft.Row(cells))
 
