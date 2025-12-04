@@ -1,5 +1,15 @@
+import os
+import smtplib
+from email.message import EmailMessage
+from notificaciones_email import (
+    enviar_correo_cita,
+    enviar_correo_cancelacion,
+    ConfigSMTPIncompleta,
+)
 import flet as ft
 from datetime import date, datetime, timedelta
+import threading
+import urllib.parse
 
 from db import (
     obtener_configuracion_profesional,
@@ -16,7 +26,9 @@ from db import (
     actualizar_bloqueo,
     eliminar_bloqueo,
     existe_bloqueo_en_fecha,
+    obtener_configuracion_profesional
 )
+
 
 # ---------------------------------------------------------
 # Constantes de texto para días y meses (en español)
@@ -105,6 +117,129 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         START_HOUR = 7
         END_HOUR = 21
 
+
+    # ==================== Notificación Whatsapp ====================
+
+    def enviar_whatsapp_confirmacion(e=None):
+        import locale
+        locale.setlocale(locale.LC_TIME, "Spanish_Spain")
+        """Abre WhatsApp con un mensaje de confirmación de la cita actual."""
+        pac = reserva.get("paciente")
+        if not pac:
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text("Primero selecciona un paciente."),
+                bgcolor=ft.Colors.AMBER_300,
+            )
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        tel = (pac.get("telefono") or "").strip()
+        if not tel:
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text("El paciente no tiene teléfono registrado."),
+                bgcolor=ft.Colors.AMBER_300,
+            )
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        # Dejar solo dígitos del teléfono
+        digits = "".join(c for c in tel if c.isdigit())
+        if not digits:
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text("El número de teléfono del paciente no es válido."),
+                bgcolor=ft.Colors.AMBER_300,
+            )
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        # Asumimos Colombia (+57); ajustable más adelante
+        if digits.startswith("57"):
+            wa_num = digits
+        elif digits.startswith("0"):
+            wa_num = "57" + digits.lstrip("0")
+        else:
+            wa_num = "57" + digits
+
+        # -------- Datos de fecha / hora --------
+        fecha_obj = reserva.get("fecha")
+        try:
+            fecha_str = fecha_obj.strftime("%A %d de %B de %Y")
+            # Capitalizar primera letra del día/mes
+            fecha_str = fecha_str.capitalize()
+        except:
+            fecha_str = "la fecha acordada"
+
+        # Hora en formato 12h (ej: 2:00 p. m.)
+        try:
+            h = int(dd_hora.value)
+            m = int(dd_min.value)
+            h12 = h if 1 <= h <= 12 else (12 if h == 0 else h - 12)
+            sufijo = "a. m." if h < 12 else "p. m."
+            hora_hum = f"{h12}:{m:02d} {sufijo}"
+        except Exception:
+            hora_hum = f"{dd_hora.value}:{dd_min.value}"
+
+        # -------- Servicio / modalidad / valor --------
+        srv = reserva.get("servicio") or {}
+        nombre_servicio = srv.get("nombre", "").strip()
+
+        modalidad_raw = srv.get("tipo", "")  # presencial / virtual / convenio_empresarial
+        modalidad_map = {
+            "presencial": "Presencial",
+            "virtual": "Virtual",
+            "convenio_empresarial": "Convenio empresarial",
+        }
+        modalidad = modalidad_map.get(modalidad_raw, modalidad_raw or "Sin especificar")
+
+        # Valor (precio)
+        valor_str = ""
+        try:
+            # Limpiamos puntos/comas por si vienen formateados
+            valor_num = float(
+                txt_precio.value.replace(".", "").replace(",", ".")
+            )
+            valor_str = f"{valor_num:,.0f}".replace(",", ".")  # 110.000
+        except Exception:
+            pass
+
+        direccion = cfg.get("direccion") or ""
+
+        # -------- Mensaje de WhatsApp --------
+        nombre_paciente = pac.get("nombre_completo", "").strip()
+
+        msg_lines = [
+            f"• Hola *{nombre_paciente}*,",
+            "",
+            "• *Cita confirmada*",
+            f"• *Fecha:* {fecha_str}",
+            f"• *Hora:* {hora_hum}",
+            f"• *Modalidad:* {modalidad}",
+        ]
+
+        if nombre_servicio:
+            msg_lines.append(f"• *Servicio:* {nombre_servicio}")
+
+        if valor_str:
+            msg_lines.append(f"• *Valor:* ${valor_str}")
+
+        if modalidad_raw == "presencial" and direccion:
+            msg_lines.append(f"• *Dirección:* {direccion}")
+
+        msg_lines.append("")
+        msg_lines.append(
+            "Si necesitas reagendar o cancelar, por favor respóndeme por este medio."
+        )
+
+        msg = "\n".join(msg_lines)
+
+        url = f"https://wa.me/{wa_num}?text={urllib.parse.quote(msg)}"
+        page.launch_url(url)
+
+
+
     # ==================== HELPERS HORARIO ====================
 
     def minutos_desde_medianoche(hhmm: str) -> int:
@@ -129,6 +264,8 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
     }
 
     cita_editando_id = {"value": None}  # None = nueva, int = editar cita existente
+    cita_editando_row = {"value": None}       # row completo de la cita en edición
+    paciente_cita_editando = {"value": None}  # paciente de la cita en edición
 
     # Estado para bloqueos de agenda
     bloqueo_editando_id = {"value": None}  # None = nuevo, int = editar bloqueo existente
@@ -247,6 +384,38 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
     dd_estado = build_estado_selector()
 
     chk_pagado = ft.Checkbox(label="Pagado", value=False)
+
+    chk_notificar_email = ft.Checkbox(
+        label="Enviar correo de confirmación al paciente",
+        value=False,
+        visible=False,  # solo se muestra si el paciente tiene email
+    )
+
+    # Boton whatsapp
+
+    btn_whatsapp_confirmacion = ft.ElevatedButton(
+        content=ft.Row(
+            [
+                ft.Image(
+                    src="https://cdn-icons-png.flaticon.com/512/3536/3536445.png",
+                    width=18,
+                    height=18,
+                ),
+                ft.Text("Enviar WhatsApp de confirmación"),
+            ],
+            spacing=8,
+            alignment=ft.MainAxisAlignment.CENTER,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+        on_click=enviar_whatsapp_confirmacion,
+        disabled=True,   # deshabilitado por defecto
+        visible=False,   # y oculto por defecto (solo en edición)
+    )
+
+    chk_notificar_cancelacion = ft.Switch(
+        label="Enviar notificación por correo",
+        value=True,
+    )
 
     txt_buscar_paciente = ft.TextField(
         label="Buscar paciente (nombre, documento, teléfono o email)",
@@ -378,22 +547,43 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
         titulo_reserva.value = f"Reserva de {pac['nombre_completo']}"
 
+         # Mostrar / ocultar el checkbox de correo según si el paciente tiene email
+        email = (pac.get("email") or "").strip()
+        if email:
+            chk_notificar_email.visible = True
+            # Para nuevas reservas lo dejaremos marcado por defecto,
+            # luego en edición lo forzaremos a False.
+            chk_notificar_email.value = True
+        else:
+            chk_notificar_email.visible = False
+            chk_notificar_email.value = False
+
         if ficha_paciente.page is not None:
             ficha_paciente.update()
             resultados_pacientes.update()
             txt_buscar_paciente.update()
             titulo_reserva.update()
+            chk_notificar_email.update()
 
     def quitar_paciente():
         reserva["paciente"] = None
         ficha_paciente.visible = False
         ficha_paciente.controls.clear()
 
+        btn_whatsapp_confirmacion.disabled = True
+        btn_whatsapp_confirmacion.visible = False
+        if btn_whatsapp_confirmacion.page is not None:
+            btn_whatsapp_confirmacion.update()
+
         titulo_reserva.value = "Nueva reserva"
+
+        chk_notificar_email.visible = False
+        chk_notificar_email.value = False
 
         if ficha_paciente.page is not None:
             ficha_paciente.update()
             titulo_reserva.update()
+            chk_notificar_email.update()
 
     # ----------------- SERVICIO -------------------
 
@@ -448,6 +638,7 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         mensaje_error.visible = False
         mensaje_error.value = ""
 
+        # Validaciones básicas
         if not reserva["paciente"]:
             mensaje_error.value = "Debes seleccionar un paciente."
             mensaje_error.visible = True
@@ -480,19 +671,21 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             return
 
         fecha_str = fecha_obj.strftime("%Y-%m-%d")
-        hora_str = f"{dd_hora.value}:{dd_min.value}"
+        hora_inicio_str = f"{dd_hora.value}:{dd_min.value}"
+        hora_fin_str = f"{dd_hora_fin.value}:{dd_min_fin.value}"
+
         srv = reserva["servicio"]
         modalidad = srv["tipo"]  # presencial / virtual / convenio_empresarial
 
         estado = dd_estado.get_value()
         pagado_flag = 1 if chk_pagado.value else 0
 
-        motivo = f"Servicio: {srv['nombre']} - Precio: {precio_final:,.0f}"
+        motivo = f"Servicio: {srv['nombre']} - Valor: {precio_final:,.0f}"
         notas = (txt_notas.value or "").strip()
 
         datos_cita = {
             "documento_paciente": reserva["paciente"]["documento"],
-            "fecha_hora": f"{fecha_str} {hora_str}",
+            "fecha_hora": f"{fecha_str} {hora_inicio_str}",
             "modalidad": modalidad,
             "motivo": motivo,
             "notas": notas,
@@ -513,7 +706,7 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
                 mensaje_error.update()
             return
 
-        # Validar que no exista un BLOQUEO de horario en esa fecha y hora
+        # Validar bloqueo de horario
         if existe_bloqueo_en_fecha(datos_cita["fecha_hora"], None):
             mensaje_error.value = (
                 "Este horario está bloqueado en la agenda. "
@@ -524,24 +717,55 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
                 mensaje_error.update()
             return
 
-        if cita_editando_id["value"] is None:
-            crear_cita(datos_cita)
-            mensaje_snack = "Reserva creada exitosamente."
+        # Guardar en BD
+        es_nueva = cita_editando_id["value"] is None
+        if es_nueva:
+            cita_id = crear_cita(datos_cita)
         else:
-            actualizar_cita(cita_editando_id["value"], datos_cita)
-            mensaje_snack = "Reserva actualizada."
+            cita_id = cita_editando_id["value"]
+            actualizar_cita(cita_id, datos_cita)
 
+        # Enviar correo si el usuario lo pidió y hay paciente (de forma asíncrona)
+        if chk_notificar_email.value and reserva.get("paciente"):
+
+            def tarea_correo():
+                try:
+                    enviar_correo_cita(
+                        reserva["paciente"],
+                        datos_cita,
+                        hora_fin_str,
+                        cita_id,
+                        cfg_profesional=cfg,
+                        es_nueva=es_nueva,
+                    )
+                    print("Correo de cita enviado correctamente.")
+                except ConfigSMTPIncompleta:
+                    print(
+                        "La reserva se guardó, pero falta configurar el envío de correos (SMTP)."
+                    )
+                except Exception as ex:
+                    print(f"Error al enviar correo de cita: {ex}")
+
+            threading.Thread(target=tarea_correo, daemon=True).start()
+
+
+        # Cerrar diálogo, refrescar agenda y mostrar snackbar de éxito genérico
         dialogo_reserva.open = False
         page.update()
 
         dibujar_calendario_semanal()
 
         page.snack_bar = ft.SnackBar(
-            content=ft.Text(mensaje_snack),
+            content=ft.Text(
+                "Reserva creada exitosamente."
+                if es_nueva
+                else "Reserva actualizada."
+            ),
             bgcolor=ft.Colors.GREEN_300,
         )
         page.snack_bar.open = True
         page.update()
+
 
     def cerrar_dialogo(e=None):
         dialogo_reserva.open = False
@@ -563,6 +787,8 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             txt_empresa_convenio,
             txt_precio,
             txt_notas,
+            chk_notificar_email,
+            btn_whatsapp_confirmacion,
             mensaje_error,
         ],
         tight=True,
@@ -602,10 +828,44 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             dialogo_reserva.update()
 
 
-    def ejecutar_cancelacion():
+    def ejecutar_cancelacion(enviar_notificacion: bool = False):
         """Ejecuta realmente la cancelación (eliminación) de la cita."""
-        if cita_editando_id["value"] is not None:
-            eliminar_cita(cita_editando_id["value"])
+        cita_id = cita_editando_id["value"]
+
+        if cita_id is not None:
+            eliminar_cita(cita_id)
+
+            # Enviar correo de cancelación si el usuario lo pidió
+            if (
+                enviar_notificacion
+                and paciente_cita_editando["value"] is not None
+                and cita_editando_row["value"] is not None
+            ):
+                pac = paciente_cita_editando["value"]
+                cita_row = cita_editando_row["value"]
+
+                datos_cita_email = {
+                    "fecha_hora": cita_row["fecha_hora"][:16],
+                    "modalidad": cita_row.get("modalidad", ""),
+                    "motivo": cita_row.get("motivo", ""),
+                }
+
+                def tarea_cancel():
+                    try:
+                        enviar_correo_cancelacion(
+                            pac,
+                            datos_cita_email,
+                            cfg_profesional=cfg,
+                        )
+                        print("Correo de cancelación enviado correctamente.")
+                    except ConfigSMTPIncompleta:
+                        print(
+                            "La cita se canceló, pero falta configurar el envío de correos (SMTP)."
+                        )
+                    except Exception as ex:
+                        print(f"Error al enviar correo de cancelación: {ex}")
+
+                threading.Thread(target=tarea_cancel, daemon=True).start()
 
         dialogo_reserva.open = False
         page.update()
@@ -619,6 +879,7 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         page.snack_bar.open = True
         page.update()
 
+
     def mostrar_confirmacion_cancelar(e=None):
         """
         Si es cita nueva: actúa como "cerrar".
@@ -629,6 +890,9 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             cerrar_dialogo()
             return
 
+        # Cada vez que abrimos la confirmación, el switch va por defecto en True
+        chk_notificar_cancelacion.value = True
+
         dialogo_reserva.title = ft.Text("Confirmar cancelación")
 
         dialogo_reserva.content = ft.Column(
@@ -637,8 +901,10 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
                     "¿Seguro que deseas cancelar esta cita?\n"
                     "Esta acción no se puede deshacer."
                 ),
+                chk_notificar_cancelacion,
             ],
-            height=120,
+            spacing=10,
+            tight=True,
         )
 
         dialogo_reserva.actions = [
@@ -648,12 +914,15 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             ),
             ft.TextButton(
                 "Sí, cancelar",
-                on_click=lambda ev: ejecutar_cancelacion(),
+                on_click=lambda ev: ejecutar_cancelacion(
+                    chk_notificar_cancelacion.value
+                ),
             ),
         ]
 
         if dialogo_reserva.page is not None:
             dialogo_reserva.update()
+
 
     # ----------------- DIÁLOGO DE BLOQUEO DE HORARIO -------------------
 
@@ -836,6 +1105,7 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
                 "¿Seguro que deseas eliminar este bloqueo de horario?\n"
                 "Esta acción no se puede deshacer."
             ),
+            
             actions=[
                 ft.TextButton("Cancelar", on_click=cancelar),
                 ft.TextButton("Eliminar", on_click=confirmar),
@@ -901,50 +1171,50 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
     # ----------------- CLICK EN SLOT (NUEVA CITA) -------------------
 
-    def preparar_reserva_para_slot(dia: date, minuto: int):
-        """Configura el estado de la reserva para el slot indicado, pero no abre el diálogo."""
-        h = minuto // 60
-        mm = minuto % 60
+    # def preparar_reserva_para_slot(dia: date, minuto: int):
+    #     """Configura el estado de la reserva para el slot indicado, pero no abre el diálogo."""
+    #     h = minuto // 60
+    #     mm = minuto % 60
 
-        cita_editando_id["value"] = None
+    #     cita_editando_id["value"] = None
 
-        reserva["fecha"] = dia
-        reserva["hora_inicio"] = (h, mm)
-        reserva["hora_fin"] = (h + 1, mm)
+    #     reserva["fecha"] = dia
+    #     reserva["hora_inicio"] = (h, mm)
+    #     reserva["hora_fin"] = (h + 1, mm)
 
-        txt_fecha.value = dia.strftime("%Y-%m-%d")
+    #     txt_fecha.value = dia.strftime("%Y-%m-%d")
 
-        dd_hora.options = [ft.dropdown.Option(f"{x:02d}") for x in range(0, 24)]
-        dd_min.options = [ft.dropdown.Option(f"{x:02d}") for x in range(0, 60, 5)]
-        dd_hora_fin.options = [ft.dropdown.Option(f"{x:02d}") for x in range(0, 24)]
-        dd_min_fin.options = [ft.dropdown.Option(f"{x:02d}") for x in range(0, 60, 5)]
+    #     dd_hora.options = [ft.dropdown.Option(f"{x:02d}") for x in range(0, 24)]
+    #     dd_min.options = [ft.dropdown.Option(f"{x:02d}") for x in range(0, 60, 5)]
+    #     dd_hora_fin.options = [ft.dropdown.Option(f"{x:02d}") for x in range(0, 24)]
+    #     dd_min_fin.options = [ft.dropdown.Option(f"{x:02d}") for x in range(0, 60, 5)]
 
-        dd_hora.value = f"{h:02d}"
-        dd_min.value = f"{mm:02d}"
-        dd_hora_fin.value = f"{h+1:02d}"
-        dd_min_fin.value = f"{mm:02d}"
+    #     dd_hora.value = f"{h:02d}"
+    #     dd_min.value = f"{mm:02d}"
+    #     dd_hora_fin.value = f"{h+1:02d}"
+    #     dd_min_fin.value = f"{mm:02d}"
 
-        reserva["paciente"] = None
-        ficha_paciente.visible = False
-        ficha_paciente.controls.clear()
+    #     reserva["paciente"] = None
+    #     ficha_paciente.visible = False
+    #     ficha_paciente.controls.clear()
 
-        titulo_reserva.value = "Nueva reserva"
+    #     titulo_reserva.value = "Nueva reserva"
 
-        txt_buscar_paciente.value = ""
-        resultados_pacientes.controls.clear()
+    #     txt_buscar_paciente.value = ""
+    #     resultados_pacientes.controls.clear()
 
-        reserva["servicio"] = None
-        dd_servicios.value = None
-        txt_precio.value = ""
-        txt_notas.value = ""
-        txt_empresa_convenio.value = ""
-        txt_empresa_convenio.visible = False
+    #     reserva["servicio"] = None
+    #     dd_servicios.value = None
+    #     txt_precio.value = ""
+    #     txt_notas.value = ""
+    #     txt_empresa_convenio.value = ""
+    #     txt_empresa_convenio.visible = False
 
-        dd_estado.set_value("reservado")
-        chk_pagado.value = False
+    #     dd_estado.set_value("reservado")
+    #     chk_pagado.value = False
 
-        mensaje_error.value = ""
-        mensaje_error.visible = False
+    #     mensaje_error.value = ""
+    #     mensaje_error.visible = False
 
     def abrir_reserva_nueva_desde_slot(e=None):
         dia = slot_actual["fecha"]
@@ -1054,6 +1324,13 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
         mensaje_error.value = ""
         mensaje_error.visible = False
+        chk_notificar_email.visible = False
+        chk_notificar_email.value = False
+
+        btn_whatsapp_confirmacion.visible = False
+        btn_whatsapp_confirmacion.disabled = True
+        if btn_whatsapp_confirmacion.page is not None:
+            btn_whatsapp_confirmacion.update()
 
     def abrir_reserva_nueva_desde_slot(dia: date, minuto: int):
         preparar_reserva_para_slot(dia, minuto)
@@ -1102,6 +1379,7 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
     def abrir_editar_cita(cita_row: dict):
         cita_editando_id["value"] = cita_row["id"]
+        cita_editando_row["value"] = cita_row
 
         dt = datetime.strptime(cita_row["fecha_hora"][:16], "%Y-%m-%d %H:%M")
         dia = dt.date()
@@ -1131,7 +1409,23 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             "telefono": cita_row.get("telefono", ""),
             "email": cita_row.get("email", ""),
         }
+        paciente_cita_editando["value"] = pac
         seleccionar_paciente(pac)
+
+        # En edición: mostramos y habilitamos el botón de WhatsApp
+        btn_whatsapp_confirmacion.visible = True
+        btn_whatsapp_confirmacion.disabled = False
+        if btn_whatsapp_confirmacion.page is not None:
+            btn_whatsapp_confirmacion.update()
+
+        # En edición: si tiene email, mostramos el checkbox pero desmarcado
+        email = (pac.get("email") or "").strip()
+        if email:
+            chk_notificar_email.visible = True
+            chk_notificar_email.value = False
+        else:
+            chk_notificar_email.visible = False
+            chk_notificar_email.value = False
 
         # Servicio y precio desde "motivo"
         nombre_serv, precio_motivo = parsear_servicio_y_precio(cita_row.get("motivo", ""))
@@ -1168,6 +1462,9 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         chk_pagado.value = bool(cita_row.get("pagado"))
 
         txt_notas.value = cita_row.get("notas") or ""
+
+        if chk_notificar_email.page is not None:
+            chk_notificar_email.update()
 
         mensaje_error.value = ""
         mensaje_error.visible = False

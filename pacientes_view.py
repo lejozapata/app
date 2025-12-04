@@ -1134,7 +1134,7 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
                     ft.Text("Registro de paciente", size=20, weight="bold"),
                     ft.Row([documento, tipo_documento, nombre_completo], wrap=True),
                     ft.Row([fecha_nacimiento, edad, sexo, estado_civil], wrap=True),
-                    ft.Row([escolaridad, eps], wrap=True),  # o eps_stack o eps_col si luego lo volvíamos a usar
+                    ft.Row([escolaridad, eps_col], wrap=True),  # o eps_stack o eps_col si luego lo volvíamos a usar
 
                     ft.Row([direccion], wrap=True),
                     ft.Row([email, telefono], wrap=True),
