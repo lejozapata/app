@@ -3,6 +3,7 @@ from db import init_db
 from admin_view import build_admin_view
 from agenda_view import build_agenda_view
 from pacientes_view import build_pacientes_view
+from facturas_view import build_facturas_view
 
 
 def main(page: ft.Page):
@@ -43,6 +44,10 @@ def main(page: ft.Page):
         body.content = build_admin_view(page)
         body.update()
 
+    def mostrar_facturas(e=None):
+        body.content = build_facturas_view(page)
+        page.update()
+
 # ----- Top Bar para admin -----
     top_bar = ft.Row(
         [
@@ -50,6 +55,7 @@ def main(page: ft.Page):
                 [
                     ft.ElevatedButton("Pacientes", on_click=mostrar_pacientes),
                     ft.ElevatedButton("Agendar", on_click=mostrar_agenda),
+                    ft.ElevatedButton("Facturas", on_click=mostrar_facturas),
                 ]
             ),
             ft.Container(expand=True),

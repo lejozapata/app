@@ -140,6 +140,23 @@ def init_db() -> None:
         """
     )
 
+    # Tabla de configuración de facturación (siempre un solo registro id=1)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS configuracion_facturacion (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            prefijo_factura TEXT NOT NULL DEFAULT 'PS',   -- ej: "PS"
+            ultimo_consecutivo INTEGER NOT NULL DEFAULT 0,
+            banco TEXT,
+            beneficiario TEXT,
+            nit TEXT,
+            numero_cuenta TEXT,
+            forma_pago TEXT,
+            notas TEXT
+        );
+        """
+    )
+
         # Tabla de servicios / modalidades de cita
     cur.execute(
         """
@@ -150,6 +167,63 @@ def init_db() -> None:
             precio REAL NOT NULL,
             empresa TEXT,                        -- Solo aplica si es convenio_empresarial (puede ser NULL)
             activo INTEGER NOT NULL DEFAULT 1    -- 1=activo, 0=inactivo
+        );
+        """
+    )
+
+    # Tabla de empresas de convenio
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS empresas_convenio (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT NOT NULL,
+            nit TEXT,
+            direccion TEXT,
+            ciudad TEXT,
+            pais TEXT,
+            telefono TEXT,
+            email_facturacion TEXT,
+            contacto TEXT,
+            activa INTEGER NOT NULL DEFAULT 1
+        );
+        """
+    )
+
+    # Tabla de facturas de convenio (encabezado)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS facturas_convenio (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            numero TEXT NOT NULL UNIQUE,             -- PS0004
+            fecha TEXT NOT NULL,                     -- 'YYYY-MM-DD'
+            empresa_id INTEGER NOT NULL,
+            paciente_documento TEXT,
+            paciente_nombre TEXT,
+            subtotal REAL NOT NULL DEFAULT 0,
+            iva REAL NOT NULL DEFAULT 0,
+            total REAL NOT NULL DEFAULT 0,
+            total_letras TEXT,
+            forma_pago TEXT,
+            estado TEXT NOT NULL DEFAULT 'pendiente', -- pendiente/pagada/anulada
+            ruta_pdf TEXT,
+            creada_en TEXT DEFAULT (datetime('now','localtime')),
+            actualizada_en TEXT,
+            FOREIGN KEY (empresa_id) REFERENCES empresas_convenio(id)
+        );
+        """
+    )
+
+    # Detalle de facturas (puede haber varias filas por factura)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS facturas_convenio_detalle (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            factura_id INTEGER NOT NULL,
+            descripcion TEXT NOT NULL,
+            cantidad REAL NOT NULL DEFAULT 1,
+            valor_unitario REAL NOT NULL,
+            valor_total REAL NOT NULL,
+            FOREIGN KEY (factura_id) REFERENCES facturas_convenio(id)
         );
         """
     )
@@ -860,9 +934,99 @@ def guardar_configuracion_profesional(cfg: dict) -> None:
     conn.commit()
     conn.close()
 
+# ------------ CONFIGURACIÓN FACTURACIÓN -------------
+
+def obtener_configuracion_facturacion() -> dict:
+    """
+    Devuelve la configuración de facturación (prefijo, consecutivo, datos bancarios).
+    Si no existe el registro id=1, lo crea con valores por defecto.
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute("SELECT * FROM configuracion_facturacion WHERE id = 1;")
+    row = cur.fetchone()
+
+    if row is None:
+        cur.execute(
+            """
+            INSERT INTO configuracion_facturacion (
+                id, prefijo_factura, ultimo_consecutivo
+            )
+            VALUES (1, 'PS', 0);
+            """
+        )
+        conn.commit()
+        cur.execute("SELECT * FROM configuracion_facturacion WHERE id = 1;")
+        row = cur.fetchone()
+
+    cfg = {
+        "prefijo_factura": row["prefijo_factura"],
+        "ultimo_consecutivo": row["ultimo_consecutivo"],
+        "banco": row["banco"],
+        "beneficiario": row["beneficiario"],
+        "nit": row["nit"],
+        "numero_cuenta": row["numero_cuenta"],
+        "forma_pago": row["forma_pago"],
+        "notas": row["notas"],
+    }
+
+    conn.close()
+    return cfg
 
 
-    # ------------ HORARIOS POR DÍA -------------
+def guardar_configuracion_facturacion(cfg: dict) -> None:
+    """
+    Actualiza la configuración de facturación (siempre id=1).
+    Espera claves:
+      prefijo_factura, ultimo_consecutivo, banco, beneficiario, nit,
+      numero_cuenta, forma_pago, notas
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        INSERT INTO configuracion_facturacion (
+            id, prefijo_factura, ultimo_consecutivo,
+            banco, beneficiario, nit,
+            numero_cuenta, forma_pago, notas
+        )
+        VALUES (
+            1, :prefijo_factura, :ultimo_consecutivo,
+            :banco, :beneficiario, :nit,
+            :numero_cuenta, :forma_pago, :notas
+        )
+        ON CONFLICT(id) DO UPDATE SET
+            prefijo_factura = excluded.prefijo_factura,
+            ultimo_consecutivo = excluded.ultimo_consecutivo,
+            banco = excluded.banco,
+            beneficiario = excluded.beneficiario,
+            nit = excluded.nit,
+            numero_cuenta = excluded.numero_cuenta,
+            forma_pago = excluded.forma_pago,
+            notas = excluded.notas;
+        """,
+        {
+            "prefijo_factura": cfg.get("prefijo_factura", "PS"),
+            "ultimo_consecutivo": cfg.get("ultimo_consecutivo", 0),
+            "banco": cfg.get("banco"),
+            "beneficiario": cfg.get("beneficiario"),
+            "nit": cfg.get("nit"),
+            "numero_cuenta": cfg.get("numero_cuenta"),
+            "forma_pago": cfg.get("forma_pago"),
+            "notas": cfg.get("notas"),
+        },
+    )
+
+    conn.commit()
+    conn.close()
+
+
+
+
+# ------------ HORARIOS POR DÍA -------------
 
 
 def obtener_horarios_atencion() -> list[dict]:
@@ -993,6 +1157,474 @@ def eliminar_servicio(servicio_id: int) -> None:
     conn.commit()
     conn.close()
 
+
+# ---------------- Empresas de convenio ----------------
+
+
+def listar_empresas_convenio(activa_only: bool = True) -> List[Dict[str, Any]]:
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    if activa_only:
+        cur.execute(
+            "SELECT * FROM empresas_convenio WHERE activa = 1 ORDER BY nombre;"
+        )
+    else:
+        cur.execute("SELECT * FROM empresas_convenio ORDER BY nombre;")
+
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def obtener_empresa_convenio(empresa_id: int) -> Optional[Dict[str, Any]]:
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute("SELECT * FROM empresas_convenio WHERE id = ?;", (empresa_id,))
+    row = cur.fetchone()
+    conn.close()
+
+    return dict(row) if row else None
+
+
+def guardar_empresa_convenio(datos: Dict[str, Any]) -> int:
+    """
+    Crea o actualiza una empresa de convenio.
+    Si datos["id"] existe, actualiza; si no, crea y devuelve el nuevo id.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    if datos.get("id"):
+        cur.execute(
+            """
+            UPDATE empresas_convenio
+            SET nombre = ?, nit = ?, direccion = ?, ciudad = ?, pais = ?,
+                telefono = ?, email_facturacion = ?, contacto = ?, activa = ?
+            WHERE id = ?;
+            """,
+            (
+                datos.get("nombre"),
+                datos.get("nit"),
+                datos.get("direccion"),
+                datos.get("ciudad"),
+                datos.get("pais"),
+                datos.get("telefono"),
+                datos.get("email_facturacion"),
+                datos.get("contacto"),
+                1 if datos.get("activa", True) else 0,
+                datos["id"],
+            ),
+        )
+        empresa_id = datos["id"]
+    else:
+        cur.execute(
+            """
+            INSERT INTO empresas_convenio (
+                nombre, nit, direccion, ciudad, pais,
+                telefono, email_facturacion, contacto, activa
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1);
+            """,
+            (
+                datos.get("nombre"),
+                datos.get("nit"),
+                datos.get("direccion"),
+                datos.get("ciudad"),
+                datos.get("pais"),
+                datos.get("telefono"),
+                datos.get("email_facturacion"),
+                datos.get("contacto"),
+            ),
+        )
+        empresa_id = cur.lastrowid
+
+    conn.commit()
+    conn.close()
+    return empresa_id
+
+# ---------------- FACTURAS DE CONVENIO ----------------
+
+
+def crear_factura_convenio(
+    datos_cabecera: Dict[str, Any],
+    items: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    Crea una factura de convenio (encabezado + detalle) y actualiza el consecutivo.
+
+    datos_cabecera espera claves:
+      - fecha (str 'YYYY-MM-DD')
+      - empresa_id (int)
+      - paciente_documento (str, opcional)
+      - paciente_nombre (str)
+      - forma_pago (str, opcional -> se puede tomar de configuracion_facturacion)
+      - estado (str, opcional -> 'pendiente' por defecto)
+      - total_letras (str, opcional -> "OCHENTA Y CINCO MIL PESOS", se implementará luego)
+
+    items es una lista de dicts con:
+      - descripcion (str)
+      - cantidad (float/int)
+      - valor_unitario (float)
+
+    Devuelve dict con:
+      {"id": factura_id, "numero": numero_factura, "subtotal": ..., "total": ...}
+    """
+    if not items:
+        raise ValueError("La factura debe tener al menos un ítem de detalle.")
+
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    try:
+        # --- Obtener / asegurar configuración de facturación en ESTA conexión ---
+        cur.execute("SELECT * FROM configuracion_facturacion WHERE id = 1;")
+        row_cfg = cur.fetchone()
+
+        if row_cfg is None:
+            cur.execute(
+                """
+                INSERT INTO configuracion_facturacion (
+                    id, prefijo_factura, ultimo_consecutivo
+                ) VALUES (1, 'PS', 0);
+                """
+            )
+            conn.commit()
+            cur.execute("SELECT * FROM configuracion_facturacion WHERE id = 1;")
+            row_cfg = cur.fetchone()
+
+        prefijo = row_cfg["prefijo_factura"]
+        ultimo = row_cfg["ultimo_consecutivo"] or 0
+        nuevo_consecutivo = ultimo + 1
+
+        # PS0001, PS0002, ..., PS9999, PS10000, etc.
+        numero_factura = f"{prefijo}{nuevo_consecutivo:04d}"
+
+        # --- Calcular subtotal, iva, total ---
+        subtotal = 0.0
+        for it in items:
+            cant = float(it.get("cantidad", 0) or 0)
+            vu = float(it.get("valor_unitario", 0) or 0)
+            subtotal += cant * vu
+
+        iva = float(datos_cabecera.get("iva", 0) or 0)
+        total = subtotal + iva
+
+         # total_letras: si no viene en datos_cabecera, se calcula automáticamente
+        total_letras = datos_cabecera.get("total_letras")
+        if not total_letras:
+            total_letras = total_a_letras_pesos(total)
+
+        # --- Insertar encabezado ---
+        forma_pago = datos_cabecera.get("forma_pago")
+        estado = datos_cabecera.get("estado") or "pendiente"
+
+        cur.execute(
+            """
+            INSERT INTO facturas_convenio (
+                numero, fecha, empresa_id,
+                paciente_documento, paciente_nombre,
+                subtotal, iva, total,
+                total_letras, forma_pago, estado, ruta_pdf, creada_en, actualizada_en
+            ) VALUES (
+                ?, ?, ?,
+                ?, ?,
+                ?, ?, ?,
+                ?, ?, ?, NULL, datetime('now','localtime'), NULL
+            );
+            """,
+            (
+                numero_factura,
+                datos_cabecera["fecha"],
+                datos_cabecera["empresa_id"],
+                datos_cabecera.get("paciente_documento"),
+                datos_cabecera.get("paciente_nombre"),
+                subtotal,
+                iva,
+                total,
+                total_letras,
+                forma_pago,
+                estado,
+            ),
+        )
+
+        factura_id = cur.lastrowid
+
+        # --- Insertar detalle ---
+        for it in items:
+            desc = it.get("descripcion") or ""
+            cant = float(it.get("cantidad", 0) or 0)
+            vu = float(it.get("valor_unitario", 0) or 0)
+            vt = cant * vu
+
+            cur.execute(
+                """
+                INSERT INTO facturas_convenio_detalle (
+                    factura_id, descripcion, cantidad, valor_unitario, valor_total
+                ) VALUES (?, ?, ?, ?, ?);
+                """,
+                (factura_id, desc, cant, vu, vt),
+            )
+
+        # --- Actualizar consecutivo ---
+        cur.execute(
+            """
+            UPDATE configuracion_facturacion
+            SET ultimo_consecutivo = ?
+            WHERE id = 1;
+            """,
+            (nuevo_consecutivo,),
+        )
+
+        conn.commit()
+
+        return {
+            "id": factura_id,
+            "numero": numero_factura,
+            "subtotal": subtotal,
+            "iva": iva,
+            "total": total,
+        }
+
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+# ---------------- Utilidades para facturación ----------------
+
+
+def _numero_a_letras_es(n: int) -> str:
+    """
+    Convierte un entero positivo en su representación en letras en español, en MAYÚSCULAS.
+    Soporta hasta millones (más que suficiente para el contexto de Sara).
+    """
+    if n == 0:
+        return "CERO"
+    if n < 0:
+        return "MENOS " + _numero_a_letras_es(-n)
+
+    unidades = [
+        "",
+        "UNO",
+        "DOS",
+        "TRES",
+        "CUATRO",
+        "CINCO",
+        "SEIS",
+        "SIETE",
+        "OCHO",
+        "NUEVE",
+    ]
+    especiales_10_19 = [
+        "DIEZ",
+        "ONCE",
+        "DOCE",
+        "TRECE",
+        "CATORCE",
+        "QUINCE",
+        "DIECISEIS",
+        "DIECISIETE",
+        "DIECIOCHO",
+        "DIECINUEVE",
+    ]
+    decenas = [
+        "",
+        "DIEZ",
+        "VEINTE",
+        "TREINTA",
+        "CUARENTA",
+        "CINCUENTA",
+        "SESENTA",
+        "SETENTA",
+        "OCHENTA",
+        "NOVENTA",
+    ]
+    centenas = [
+        "",
+        "CIENTO",
+        "DOSCIENTOS",
+        "TRESCIENTOS",
+        "CUATROCIENTOS",
+        "QUINIENTOS",
+        "SEISCIENTOS",
+        "SETECIENTOS",
+        "OCHOCIENTOS",
+        "NOVECIENTOS",
+    ]
+
+    def tres_cifras(num: int) -> str:
+        c = num // 100
+        r = num % 100
+        d = r // 10
+        u = r % 10
+        palabras = []
+
+        if num == 0:
+            return ""
+        if num == 100:
+            return "CIEN"
+
+        if c:
+            palabras.append(centenas[c])
+
+        if 10 <= r <= 19:
+            palabras.append(especiales_10_19[r - 10])
+        else:
+            if d:
+                if d == 2 and u != 0:
+                    # 21-29: VEINTIUNO, VEINTIDOS, ...
+                    palabras.append("VEINTI" + unidades[u])
+                    u = 0
+                else:
+                    palabras.append(decenas[d])
+            if u:
+                if d >= 3:
+                    palabras.append("Y")
+                palabras.append(unidades[u])
+
+        return " ".join(palabras)
+
+    partes = []
+    millones = n // 1_000_000
+    miles = (n % 1_000_000) // 1000
+    resto = n % 1000
+
+    if millones:
+        if millones == 1:
+            partes.append("UN MILLON")
+        else:
+            partes.append(tres_cifras(millones) + " MILLONES")
+
+    if miles:
+        if miles == 1:
+            partes.append("MIL")
+        else:
+            partes.append(tres_cifras(miles) + " MIL")
+
+    if resto:
+        partes.append(tres_cifras(resto))
+
+    return " ".join(p for p in partes if p)
+
+
+def total_a_letras_pesos(total: float) -> str:
+    """
+    Convierte un valor numérico a texto tipo:
+    85000  -> 'OCHENTA Y CINCO MIL PESOS'
+    110000 -> 'CIENTO DIEZ MIL PESOS'
+    """
+    entero = int(round(total or 0))
+    return f"{_numero_a_letras_es(entero)} PESOS"
+
+
+def obtener_factura_convenio(factura_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Devuelve una factura con sus detalles:
+      {
+        "encabezado": {...},
+        "detalles": [ {...}, {...}, ... ]
+      }
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT f.*, e.nombre AS empresa_nombre, e.nit AS empresa_nit,
+               e.direccion AS empresa_direccion, e.ciudad AS empresa_ciudad,
+               e.pais AS empresa_pais, e.telefono AS empresa_telefono
+        FROM facturas_convenio f
+        JOIN empresas_convenio e ON e.id = f.empresa_id
+        WHERE f.id = ?;
+        """,
+        (factura_id,),
+    )
+    enc = cur.fetchone()
+    if enc is None:
+        conn.close()
+        return None
+
+    cur.execute(
+        """
+        SELECT *
+        FROM facturas_convenio_detalle
+        WHERE factura_id = ?
+        ORDER BY id;
+        """,
+        (factura_id,),
+    )
+    det_rows = cur.fetchall()
+    conn.close()
+
+    return {
+        "encabezado": dict(enc),
+        "detalles": [dict(d) for d in det_rows],
+    }
+
+
+def listar_facturas_convenio(
+    empresa_id: Optional[int] = None,
+    fecha_desde: Optional[str] = None,
+    fecha_hasta: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Lista facturas de convenio con filtros opcionales:
+      - empresa_id
+      - fecha_desde / fecha_hasta (str 'YYYY-MM-DD')
+    Ordenadas por fecha DESC, numero DESC.
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    condiciones = []
+    params: List[Any] = []
+
+    if empresa_id is not None:
+        condiciones.append("f.empresa_id = ?")
+        params.append(empresa_id)
+
+    if fecha_desde:
+        condiciones.append("date(f.fecha) >= date(?)")
+        params.append(fecha_desde)
+
+    if fecha_hasta:
+        condiciones.append("date(f.fecha) <= date(?)")
+        params.append(fecha_hasta)
+
+    where_clause = ""
+    if condiciones:
+        where_clause = "WHERE " + " AND ".join(condiciones)
+
+    sql = f"""
+        SELECT
+            f.id,
+            f.numero,
+            f.fecha,
+            f.empresa_id,
+            e.nombre AS empresa_nombre,
+            f.paciente_nombre,
+            f.total,
+            f.estado
+        FROM facturas_convenio f
+        JOIN empresas_convenio e ON e.id = f.empresa_id
+        {where_clause}
+        ORDER BY date(f.fecha) DESC, f.numero DESC;
+    """
+    cur.execute(sql, params)
+
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 # ------------ FIN -------------
 
 
@@ -1000,3 +1632,6 @@ if __name__ == "__main__":
     print(f"Inicializando base de datos en: {DB_PATH}")
     init_db()
     print("Tablas listas.")
+    # Puedes agregar código de prueba aquí si lo deseas
+
+    

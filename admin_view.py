@@ -13,7 +13,28 @@ from db import (
     crear_servicio,
     actualizar_servicio,
     eliminar_servicio,
+    obtener_configuracion_facturacion, 
+    actualizar_configuracion_facturacion,
+
 )
+
+BANCOS_CO = [
+    "Bancolombia",
+    "Banco de Bogotá",
+    "Davivienda",
+    "Banco de Occidente",
+    "Banco Popular",
+    "BBVA Colombia",
+    "Scotiabank Colpatria",
+    "Banco Caja Social",
+    "Banco AV Villas",
+    "Itaú",
+    "Banco Agrario",
+    "Banco Falabella",
+    "Banco de Occidente",
+    "Nequi",
+    "Daviplata",
+]
 
 
 def build_timezone_options() -> list[ft.dropdown.Option]:
