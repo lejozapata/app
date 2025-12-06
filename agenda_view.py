@@ -26,7 +26,10 @@ from db import (
     actualizar_bloqueo,
     eliminar_bloqueo,
     existe_bloqueo_en_fecha,
-    obtener_configuracion_profesional
+    obtener_configuracion_profesional,
+    listar_empresas_convenio,
+    crear_factura_convenio,
+    obtener_configuracion_facturacion,
 )
 
 

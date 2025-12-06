@@ -13,9 +13,9 @@ from db import (
     crear_servicio,
     actualizar_servicio,
     eliminar_servicio,
-    obtener_configuracion_facturacion, 
-    actualizar_configuracion_facturacion,
-
+    obtener_configuracion_facturacion,
+    guardar_configuracion_facturacion,
+    listar_empresas_convenio,
 )
 
 BANCOS_CO = [
@@ -31,10 +31,36 @@ BANCOS_CO = [
     "Itaú",
     "Banco Agrario",
     "Banco Falabella",
-    "Banco de Occidente",
+    "Banco Pichincha",
+    "Bancoomeva",
+    "Banco GNB Sudameris",
+    "Citibank",
     "Nequi",
     "Daviplata",
+    "RappiPay",
 ]
+
+
+def formatear_telefono_display(telefono: str | None) -> str:
+    """
+    Recibe un teléfono y lo devuelve con formato básico (XXX XXX XXXX).
+    Si no hay teléfono, devuelve cadena vacía.
+    """
+    if not telefono:
+        return ""
+
+    digits = re.sub(r"\D", "", telefono)
+
+    # Limitar a 10 dígitos (ej. celular colombiano)
+    digits = digits[:10]
+
+    # Aplica formato XXX XXX XXXX
+    if len(digits) <= 3:
+        return digits
+    elif len(digits) <= 6:
+        return f"{digits[:3]} {digits[3:]}"
+    else:
+        return f"{digits[:3]} {digits[3:6]} {digits[6:]}"
 
 
 def build_timezone_options() -> list[ft.dropdown.Option]:
@@ -52,52 +78,36 @@ def build_timezone_options() -> list[ft.dropdown.Option]:
                 continue
 
             tz = ZoneInfo(tz_name)
-            offset = tz.utcoffset(now_utc)
+            offset = now_utc.astimezone(tz).utcoffset()
             if offset is None:
                 continue
 
-            total_min = int(offset.total_seconds() // 60)
-            sign = "+" if total_min >= 0 else "-"
-            total_min = abs(total_min)
-            hh = total_min // 60
-            mm = total_min % 60
+            total_minutes = int(offset.total_seconds() // 60)
+            sign = "+" if total_minutes >= 0 else "-"
+            total_minutes = abs(total_minutes)
+            hours, minutes = divmod(total_minutes, 60)
 
-            ciudad = tz_name.split("/")[-1].replace("_", " ")
-            label = f"(GMT{sign}{hh:02d}:{mm:02d}) {ciudad}"
-            opciones.append(ft.dropdown.Option(label))
+            label = f"(GMT{sign}{hours:02d}:{minutes:02d}) {tz_name.split('/')[-1].replace('_', ' ')}"
+            opciones.append(ft.dropdown.Option(tz_name, label))
     except Exception:
-        # Si algo falla, dejamos una lista mínima
-        opciones = [ft.dropdown.Option("(GMT-05:00) Bogota")]
+        # Fallback sencillo si hay algún problema con zoneinfo
+        opciones = [ft.dropdown.Option("America/Bogota", "(GMT-05:00) Bogota")]
 
-    if not opciones:
-        opciones = [ft.dropdown.Option("(GMT-05:00) Bogota")]
+    # Asegurar al menos Bogotá
+    if not any("Bogota" in o.text or "Bogotá" in o.text for o in opciones):
+        opciones.insert(0, ft.dropdown.Option("America/Bogota", "(GMT-05:00) Bogota"))
 
     return opciones
 
 
-def formatear_telefono_display(numero: str) -> str:
-    # Deja solo dígitos
-    digits = "".join(filter(str.isdigit, numero or ""))
-
-    # Limita a 10
-    digits = digits[:10]
-
-    # Aplica formato XXX XXX XXXX
-    if len(digits) <= 3:
-        return digits
-    elif len(digits) <= 6:
-        return f"{digits[:3]} {digits[3:]}"
-    else:
-        return f"{digits[:3]} {digits[3:6]} {digits[6:]}"
-
-
 def build_admin_view(page: ft.Page) -> ft.Control:
-    """Vista de administración / configuración."""  # :contentReference[oaicite:0]{index=0}
+    """Vista de administración / configuración."""
 
-    # ---------------- Cargar datos desde BD ----------------
+    # ---------------- Cargar datos desde BD ---------
 
     cfg = obtener_configuracion_profesional()
     horarios = obtener_horarios_atencion()
+    cfg_fact = obtener_configuracion_facturacion()
 
     seccion_activa = {"value": "profesional"}  # "profesional" | "servicios"
 
@@ -157,6 +167,93 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         value=cfg.get("email") or "",
         width=300,
     )
+
+    # -------- Información complementaria para facturación --------
+
+    dd_banco = ft.Dropdown(
+        label="Banco",
+        width=300,
+        options=[ft.dropdown.Option(b) for b in BANCOS_CO],
+        value=cfg_fact.get("banco") if cfg_fact.get("banco") in BANCOS_CO else None,
+    )
+
+    chk_benef_mismo = ft.Checkbox(
+        label="El beneficiario es el mismo profesional",
+        value=bool(
+            cfg_fact.get("beneficiario")
+            and cfg_fact.get("beneficiario") == (cfg.get("nombre_profesional") or "")
+        ),
+    )
+
+    txt_beneficiario = ft.TextField(
+        label="Beneficiario",
+        value=cfg_fact.get("beneficiario") or (cfg.get("nombre_profesional") or ""),
+        width=400,
+    )
+
+    txt_nit_cc = ft.TextField(
+        label="NIT / CC para facturar",
+        value=cfg_fact.get("nit") or "",
+        width=250,
+    )
+
+    dd_forma_pago = ft.Dropdown(
+        label="Forma de pago",
+        width=250,
+        options=[
+            ft.dropdown.Option("Transferencia bancaria"),
+            ft.dropdown.Option("Efectivo"),
+            ft.dropdown.Option("Cheque"),
+        ],
+        value=cfg_fact.get("forma_pago") or "Transferencia bancaria",
+    )
+
+    txt_numero_cuenta = ft.TextField(
+        label="Número de cuenta",
+        value=cfg_fact.get("numero_cuenta") or "",
+        width=250,
+    )
+
+    def actualizar_beneficiario_desde_profesional():
+        if chk_benef_mismo.value:
+            txt_beneficiario.value = txt_nombre.value.strip()
+            txt_beneficiario.disabled = True
+        else:
+            txt_beneficiario.disabled = False
+        if txt_beneficiario.page is not None:
+            txt_beneficiario.update()
+
+    def on_cambio_chk_benef(e):
+        actualizar_beneficiario_desde_profesional()
+
+    chk_benef_mismo.on_change = on_cambio_chk_benef
+
+    def on_cambio_nombre_prof(e):
+        if chk_benef_mismo.value:
+            txt_beneficiario.value = txt_nombre.value.strip()
+            if txt_beneficiario.page is not None:
+                txt_beneficiario.update()
+
+    txt_nombre.on_change = on_cambio_nombre_prof
+
+    def actualizar_estado_numero_cuenta():
+        if dd_forma_pago.value == "Transferencia bancaria":
+            txt_numero_cuenta.disabled = False
+            txt_numero_cuenta.visible = True
+        else:
+            txt_numero_cuenta.disabled = True
+            txt_numero_cuenta.visible = False
+        if txt_numero_cuenta.page is not None:
+            txt_numero_cuenta.update()
+
+    def on_cambio_forma_pago(e):
+        actualizar_estado_numero_cuenta()
+
+    dd_forma_pago.on_change = on_cambio_forma_pago
+
+    # Inicializar estados de beneficiario y cuenta
+    actualizar_beneficiario_desde_profesional()
+    actualizar_estado_numero_cuenta()
 
     # -------- Horario por día --------
 
@@ -249,7 +346,6 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             fila_ref["cont_fin_dd"].visible = activo
             fila_ref["lbl_ini_cerrado"].visible = not activo
             fila_ref["lbl_fin_cerrado"].visible = not activo
-            # Mientras build_admin_view se está ejecutando, el control aún no está en page:
             if page is not None and page.controls:
                 page.update()
 
@@ -261,7 +357,6 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         filas_horario.append(fila)
 
     filas_visual_horario: list[ft.Control] = []
-
     filas_visual_horario.append(
         ft.Row(
             [
@@ -301,7 +396,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
     )
 
     async def limpiar_mensaje_profesional():
-        await asyncio.sleep(3)  # segundos
+        await asyncio.sleep(3)
         mensaje_profesional.value = ""
         if mensaje_profesional.page is not None:
             mensaje_profesional.update()
@@ -355,8 +450,28 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         guardar_configuracion_profesional(nuevo_cfg)
         guardar_horarios_atencion(lista_horarios)
 
+        # ---- Configuración de facturación ----
+        cfg_fact_actual = obtener_configuracion_facturacion()
+
+        cfg_fact_guardar = {
+            "prefijo_factura": cfg_fact_actual.get("prefijo_factura", "PS"),
+            "ultimo_consecutivo": cfg_fact_actual.get("ultimo_consecutivo", 0),
+            "banco": dd_banco.value,
+            "beneficiario": (txt_beneficiario.value or "").strip() or None,
+            "nit": (txt_nit_cc.value or "").strip() or None,
+            "numero_cuenta": (
+                (txt_numero_cuenta.value or "").strip()
+                if dd_forma_pago.value == "Transferencia bancaria"
+                else None
+            ),
+            "forma_pago": dd_forma_pago.value,
+            "notas": cfg_fact_actual.get("notas"),
+        }
+
+        guardar_configuracion_facturacion(cfg_fact_guardar)
+
         page.snack_bar = ft.SnackBar(
-            content=ft.Text("Configuración de horario guardada.")
+            content=ft.Text("Configuración de horario y facturación guardada.")
         )
         page.snack_bar.open = True
 
@@ -380,6 +495,17 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             ft.Row([txt_direccion], spacing=10),
             ft.Row([dd_zona_horaria, txt_telefono, txt_email], spacing=10),
             ft.Divider(),
+            ft.Text("Información complementaria para facturación", weight="bold"),
+            ft.Text(
+                "Estos datos se usarán en las facturas y para mostrar la información bancaria al paciente.",
+                size=12,
+                color=ft.Colors.GREY_700,
+            ),
+            ft.Row([dd_banco, dd_forma_pago], spacing=10),
+            ft.Row([chk_benef_mismo], spacing=10),
+            ft.Row([txt_beneficiario, txt_nit_cc], spacing=10),
+            ft.Row([txt_numero_cuenta], spacing=10),
+            ft.Divider(),
             ft.Text("Horario de inicio y fin de la jornada", weight="bold"),
             ft.Text(
                 "Selecciona los días de atención y el horario.",
@@ -387,16 +513,22 @@ def build_admin_view(page: ft.Page) -> ft.Control:
                 color=ft.Colors.GREY_700,
             ),
             ft.Container(
-                content=ft.Column(filas_visual_horario, spacing=8),
-                padding=10,
-                border=ft.border.all(1, ft.Colors.GREY_300),
-                border_radius=8,
+            content=ft.Column(filas_visual_horario, spacing=8),
+            padding=10,
+            border=ft.border.all(1, ft.Colors.GREY_300),
+            border_radius=8,
+        ),
+        mensaje_profesional,
+        ft.Container(
+            content=ft.Row(
+                [ft.ElevatedButton("Guardar cambios", on_click=guardar_profesional)],
+                #alignment=ft.MainAxisAlignment.END,
             ),
-            mensaje_profesional,
-            ft.ElevatedButton("Guardar cambios", on_click=guardar_profesional),
-        ],
-        spacing=15,
-        scroll=ft.ScrollMode.AUTO,
+            padding=ft.padding.only(bottom=32, top=4),
+        ),
+    ],
+    spacing=15,
+    scroll=ft.ScrollMode.AUTO,
     )
 
     # =====================================================================
@@ -407,22 +539,27 @@ def build_admin_view(page: ft.Page) -> ft.Control:
 
     # --- Controles del diálogo de Nuevo Servicio ---
 
+    empresas_convenio = listar_empresas_convenio(True)
+
     txt_srv_nombre = ft.TextField(label="Nombre del servicio", width=300)
 
-    txt_srv_empresa = ft.TextField(
-        label="Empresa (si es convenio)", width=300, disabled=True
+    dd_srv_empresa = ft.Dropdown(
+        label="Empresa (si es convenio)",
+        width=300,
+        disabled=True,
+        options=[ft.dropdown.Option(emp["nombre"]) for emp in empresas_convenio],
     )
 
     def on_cambio_tipo(e):
         # Si es convenio, habilitamos "Empresa", si no, la deshabilitamos
         if dd_srv_tipo.value == "convenio_empresarial":
-            txt_srv_empresa.disabled = False
+            dd_srv_empresa.disabled = False
         else:
-            txt_srv_empresa.disabled = True
-            txt_srv_empresa.value = ""
+            dd_srv_empresa.disabled = True
+            dd_srv_empresa.value = ""
         # Solo actualizar si el control ya está montado en la página (diálogo abierto)
-        if txt_srv_empresa.page is not None:
-            txt_srv_empresa.update()
+        if dd_srv_empresa.page is not None:
+            dd_srv_empresa.update()
 
     dd_srv_tipo = ft.Dropdown(
         label="Tipo",
@@ -464,7 +601,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
                 txt_srv_nombre,
                 dd_srv_tipo,
                 txt_srv_precio,
-                txt_srv_empresa,
+                dd_srv_empresa,
             ],
             tight=True,
             spacing=10,
@@ -533,11 +670,17 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             )
 
             for s in filas:
+                precio = s["precio"]
+                try:
+                    precio_txt = f"${precio:,.0f}"
+                except Exception:
+                    precio_txt = str(precio)
+
                 fila = ft.Row(
                     [
                         ft.Text(s["nombre"], width=220),
                         ft.Text(s["tipo"], width=140),
-                        ft.Text(f"${s['precio']:,.0f}", width=100),
+                        ft.Text(precio_txt, width=100),
                         ft.Text(s["empresa"] or "", width=180),
                         ft.Row(
                             [
@@ -556,7 +699,8 @@ def build_admin_view(page: ft.Page) -> ft.Control:
                                     ),
                                 ),
                             ],
-                            spacing=0,
+                            spacing=5,
+                            width=120,
                         ),
                     ],
                     spacing=10,
@@ -577,11 +721,11 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         txt_srv_precio.value = str(int(servicio["precio"]))
 
         if servicio["tipo"] == "convenio_empresarial":
-            txt_srv_empresa.disabled = False
-            txt_srv_empresa.value = servicio["empresa"] or ""
+            dd_srv_empresa.disabled = False
+            dd_srv_empresa.value = servicio["empresa"] or ""
         else:
-            txt_srv_empresa.disabled = True
-            txt_srv_empresa.value = ""
+            dd_srv_empresa.disabled = True
+            dd_srv_empresa.value = ""
 
         # Cambiamos apariencia del diálogo
         dlg_nuevo_servicio.title = ft.Text("Editar servicio")
@@ -605,7 +749,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
     def actualizar_servicio_handler(e, servicio):
         nombre = (txt_srv_nombre.value or "").strip()
         tipo = dd_srv_tipo.value or "presencial"
-        empresa = (txt_srv_empresa.value or "").strip()
+        empresa = (dd_srv_empresa.value or "").strip()
 
         if not nombre:
             mostrar_error_servicio("El nombre del servicio es obligatorio.")
@@ -624,10 +768,9 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             if precio <= 0:
                 raise ValueError()
         except Exception:
-            mostrar_error_servicio("Precio inválido.")
+            mostrar_error_servicio("Precio inválido. Usa solo números.")
             return
 
-        # Conservamos el estado actual del servicio (activo / inactivo)
         activo = servicio["activo"] if "activo" in servicio.keys() else 1
 
         actualizar_servicio(
@@ -651,7 +794,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
     def guardar_nuevo_servicio(e):
         nombre = (txt_srv_nombre.value or "").strip()
         tipo = dd_srv_tipo.value or "presencial"
-        empresa = (txt_srv_empresa.value or "").strip()
+        empresa = (dd_srv_empresa.value or "").strip()
 
         # Limpiar error previo
         srv_error_text.value = ""
@@ -670,7 +813,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         # Validar empresa sólo si es convenio
         if tipo == "convenio_empresarial" and not empresa:
             mostrar_error_servicio(
-                "Para convenios empresariales debes indicar el nombre de la empresa."
+                "Para convenios empresariales debes indicar la empresa."
             )
             return
 
@@ -705,8 +848,8 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         txt_srv_nombre.value = ""
         dd_srv_tipo.value = "presencial"
         txt_srv_precio.value = ""
-        txt_srv_empresa.value = ""
-        txt_srv_empresa.disabled = True
+        dd_srv_empresa.value = ""
+        dd_srv_empresa.disabled = True
         srv_error_text.value = ""
         srv_error_text.visible = False
 
@@ -752,7 +895,6 @@ def build_admin_view(page: ft.Page) -> ft.Control:
 
     contenido_derecha = ft.Container(expand=True)
 
-    # Menú izquierdo: list tiles como variables para poder cambiar selected
     tile_profesional = ft.ListTile(
         leading=ft.Icon(ft.Icons.PERSON),
         title=ft.Text("Información del Profesional"),
@@ -774,11 +916,9 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         elif nueva == "servicios":
             contenido_derecha.content = seccion_servicios
 
-        # Si cambiamos de sección, limpiamos el mensaje del profesional
         if nueva != "profesional":
             mensaje_profesional.value = ""
 
-        # Actualizar selección del menú
         tile_profesional.selected = nueva == "profesional"
         tile_servicios.selected = nueva == "servicios"
 
@@ -788,7 +928,6 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             tile_profesional.update()
             tile_servicios.update()
 
-    # Seteamos contenido inicial sin forzar update extra
     cambiar_seccion("profesional")
 
     menu_izquierdo = ft.Container(
@@ -813,7 +952,6 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         ),
     )
 
-    # LAYOUT FINAL
     return ft.Row(
         [
             menu_izquierdo,
