@@ -86,6 +86,15 @@ def generar_pdf_factura(factura_id: int, abrir: bool = True) -> str:
 
     archivo_pdf = os.path.join(facturas_dir, f"{numero} - Sara Hernandez.pdf")
 
+    # Si el archivo ya existe, solo lo abrimos y devolvemos la ruta
+    if os.path.exists(archivo_pdf):
+        if abrir and os.name == "nt":
+            try:
+                os.startfile(archivo_pdf)
+            except Exception:
+                pass
+        return archivo_pdf
+
     # ---------- Estilos base ----------
     styles = getSampleStyleSheet()
     normal = styles["Normal"]
@@ -297,18 +306,29 @@ def generar_pdf_factura(factura_id: int, abrir: bool = True) -> str:
     ]
 
     for d in dets:
-        desc = d["descripcion"]
+        desc_base = d["descripcion"]
+
+        # Obtener paciente para concatenar correctamente
+        paciente_nombre = enc.get("paciente_nombre") or ""
+
+        # Concatenar SOLO para el PDF
+        if paciente_nombre:
+            desc = f"{desc_base} de {paciente_nombre}"
+        else:
+            desc = desc_base
+
         vu = d["valor_unitario"]
         cant = d["cantidad"]
         vt = d["valor_total"]
+
         detalle_rows.append(
-            [
-                Paragraph(desc, normal),
-                f"{vu:,.0f}".replace(",", "."),
-                f"{cant:g}",
-                f"{vt:,.0f}".replace(",", "."),
-            ]
-        )
+        [
+            Paragraph(desc, normal),
+            f"{vu:,.0f}".replace(",", "."),
+            f"{cant:g}",
+            f"{vt:,.0f}".replace(",", "."),
+        ]
+    )
 
     # --- RELLENO PARA QUE LA TABLA OCULPE MÁS ESPACIO VERTICAL ---
     min_filas_detalle = 7  # número mínimo de filas de detalle (sin contar la cabecera)

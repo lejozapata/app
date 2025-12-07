@@ -27,9 +27,6 @@ from db import (
     eliminar_bloqueo,
     existe_bloqueo_en_fecha,
     obtener_configuracion_profesional,
-    listar_empresas_convenio,
-    crear_factura_convenio,
-    obtener_configuracion_facturacion,
 )
 
 
@@ -415,6 +412,13 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         visible=False,   # y oculto por defecto (solo en edición)
     )
 
+    # Botón para facturar convenio (solo para servicios de tipo convenio_empresarial)
+    btn_facturar_convenio = ft.IconButton(
+        icon=ft.Icons.RECEIPT_LONG,
+        tooltip="Crear factura de convenio",
+        visible=False,  # solo en edición y si es convenio
+    )
+
     chk_notificar_cancelacion = ft.Switch(
         label="Enviar notificación por correo",
         value=True,
@@ -791,7 +795,10 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             txt_precio,
             txt_notas,
             chk_notificar_email,
-            btn_whatsapp_confirmacion,
+            ft.Row(
+                [btn_whatsapp_confirmacion, btn_facturar_convenio],
+                spacing=8,
+            ),
             mensaje_error,
         ],
         tight=True,
@@ -1227,6 +1234,11 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
         preparar_reserva_para_slot(dia, minuto)
 
+        # En nueva reserva no se puede facturar todavía
+        btn_facturar_convenio.visible = False
+        if btn_facturar_convenio.page is not None:
+            btn_facturar_convenio.update()
+
         # aseguramos estado normal del diálogo de reserva
         restaurar_dialogo_reserva()
 
@@ -1379,6 +1391,104 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             except Exception:
                 pass
         return nombre_serv, precio
+    
+    def facturar_convenio_desde_reserva(e=None):
+        """Prepara la información de la cita de convenio y navega a la vista de facturación."""
+        srv = reserva.get("servicio") or {}
+        if srv.get("tipo") != "convenio_empresarial":
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text("Solo las reservas de tipo convenio empresarial pueden facturarse como convenio."),
+                bgcolor=ft.Colors.RED_300,
+            )
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        pac = reserva.get("paciente") or paciente_cita_editando.get("value")
+        if not pac:
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text("Selecciona un paciente antes de facturar el convenio."),
+                bgcolor=ft.Colors.RED_300,
+            )
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        empresa_nombre = (srv.get("empresa") or "").strip()
+        if not empresa_nombre:
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text("El servicio de convenio no tiene empresa asociada."),
+                bgcolor=ft.Colors.RED_300,
+            )
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        try:
+            precio = float((txt_precio.value or "0").replace(".", "").replace(",", "."))
+        except Exception:
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text("Precio inválido para facturar el convenio."),
+                bgcolor=ft.Colors.RED_300,
+            )
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        if precio <= 0:
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text("El valor de la consulta debe ser mayor que 0 para facturar el convenio."),
+                bgcolor=ft.Colors.RED_300,
+            )
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        fecha_res = reserva.get("fecha") or date.today()
+        try:
+            fecha_str = fecha_res.strftime("%Y-%m-%d")
+        except Exception:
+            fecha_str = str(fecha_res)
+
+        datos_prefactura = {
+            "empresa_nombre": empresa_nombre,
+            "paciente_documento": pac.get("documento") or "",
+            "paciente_nombre": pac.get("nombre_completo") or "",
+            "precio": precio,
+            "fecha": fecha_str,
+        }
+
+        # Guardar en sesión para que facturas_view lo lea al inicializarse
+        try:
+            page.session.set("facturar_desde_agenda", datos_prefactura)
+        except Exception:
+            # Fallback muy simple por si session no está disponible
+            setattr(page, "facturar_desde_agenda", datos_prefactura)
+
+        
+        # --- Cerrar el diálogo antes de navegar ---
+        dialogo_reserva.open = False
+        page.update()
+
+        # Navegar a la vista de facturación si el main registró un callback
+        cb = getattr(page, "mostrar_facturas_cb", None)
+        if callable(cb):
+            cb(e)
+        else:
+            # Fallback: intentar usar rutas o al menos informar al usuario
+            try:
+                page.go("/facturas")
+            except Exception:
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text(
+                        "Datos listos para facturación. Abre la pestaña de Facturación para continuar."
+                    ),
+                    bgcolor=ft.Colors.AMBER_200,
+                )
+                page.snack_bar.open = True
+                page.update()
+
+    btn_facturar_convenio.on_click = facturar_convenio_desde_reserva
 
     def abrir_editar_cita(cita_row: dict):
         cita_editando_id["value"] = cita_row["id"]
@@ -1443,6 +1553,15 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
         # Actualizar precio y empresa según el servicio
         seleccionar_servicio(None)
+
+        # Mostrar u ocultar botón de facturar convenio según el tipo de servicio
+        srv_sel = reserva.get("servicio") or {}
+        if srv_sel.get("tipo") == "convenio_empresarial":
+            btn_facturar_convenio.visible = True
+        else:
+            btn_facturar_convenio.visible = False
+        if btn_facturar_convenio.page is not None:
+            btn_facturar_convenio.update()
 
         # Sobrescribir precio con el valor guardado en la cita
         precio_db = cita_row.get("precio")

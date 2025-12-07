@@ -46,7 +46,34 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
         label="Fecha factura",
         value=date.today().isoformat(),
         width=160,
+        read_only=True,
     )
+
+    dp_fecha = ft.DatePicker(
+        first_date=date(2020, 1, 1),
+        last_date=date(2100, 12, 31),
+    )
+
+    def _on_change_fecha(e):
+        if dp_fecha.value:
+            txt_fecha.value = dp_fecha.value.strftime("%Y-%m-%d")
+            if txt_fecha.page is not None:
+                txt_fecha.update()
+
+    dp_fecha.on_change = _on_change_fecha
+
+    # Registrar el datepicker en el overlay de la página
+    try:
+        if dp_fecha not in page.overlay:
+            page.overlay.append(dp_fecha)
+    except Exception:
+        page.overlay.append(dp_fecha)
+
+    def _abrir_datepicker(e):
+    # Abrir el DatePicker como un diálogo
+        dp_fecha.open = True
+        if page is not None:
+            page.update()
 
     # --- Paciente: búsqueda simple en memoria ---
     txt_buscar_paciente = ft.TextField(
@@ -190,6 +217,65 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
     dd_iva_porcentaje.on_change = _recalcular_totales
     _recalcular_totales()
 
+
+     # --- Prefill cuando venimos desde la agenda (facturar convenio) ---
+    prefill = None
+    try:
+        prefill = page.session.get("facturar_desde_agenda")
+    except Exception:
+        # Fallback por si session no está disponible
+        prefill = getattr(page, "facturar_desde_agenda", None)
+
+    if isinstance(prefill, dict):
+        # 1) Empresa del convenio (buscamos por nombre)
+        nombre_emp = (prefill.get("empresa_nombre") or "").strip()
+        if nombre_emp:
+            for e in empresas_cache:
+                try:
+                    n = (e.get("nombre") or "").strip()
+                except AttributeError:
+                    n = (e["nombre"] or "").strip()
+                if n == nombre_emp:
+                    dd_empresas.value = str(e["id"])
+                    break
+
+        # 2) Paciente
+        txt_paciente_nombre.value = prefill.get("paciente_nombre") or ""
+        txt_paciente_documento.value = prefill.get("paciente_documento") or ""
+
+        # 3) Precio (va al valor unitario)
+        precio = prefill.get("precio")
+        if precio is not None:
+            try:
+                txt_valor_unitario.value = str(int(precio))
+            except Exception:
+                txt_valor_unitario.value = str(precio)
+        else:
+            txt_valor_unitario.value = ""
+
+        # Cantidad fija en 1 cuando viene de agenda
+        txt_cantidad.value = "1"
+
+        # Fecha sugerida (si viene)
+        if prefill.get("fecha"):
+            txt_fecha.value = prefill["fecha"]
+
+        # Descripción por defecto
+        if not (txt_descripcion.value or "").strip():
+            txt_descripcion.value = "Consulta Psicológica"
+
+        # Recalcular totales con los valores precargados
+        _recalcular_totales()
+
+        # Limpiar el flag para que no siga prellenando en futuras visitas
+        try:
+            page.session.remove("facturar_desde_agenda")
+        except Exception:
+            try:
+                delattr(page, "facturar_desde_agenda")
+            except Exception:
+                pass
+
     # --- Tabla de facturas existentes ---
 
     facturas_table = ft.DataTable(
@@ -225,7 +311,12 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
             page.update()
 
     def _cargar_facturas():
-        facturas = listar_facturas_convenio()
+
+        facturas = sorted(
+        listar_facturas_convenio(),
+        key=lambda f: f.get("numero", ""),
+        reverse=True,          # 👉 última factura primero
+        )
         facturas_table.rows.clear()
 
         for f in facturas:
@@ -321,19 +412,12 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
             "estado": "pendiente",
         }
 
-        descripcion_base = (txt_descripcion.value or "").strip() or "Consulta Psicológica"
-        nombre_paciente = (txt_paciente_nombre.value or "").strip()
-
-        if nombre_paciente:
-            descripcion_final = f"{descripcion_base} de {nombre_paciente}"
-        else:
-            descripcion_final = descripcion_base
-
         items = [
             {
-                "descripcion": descripcion_final,
+                "descripcion": txt_descripcion.value.strip(),
                 "cantidad": cant,
                 "valor_unitario": vu,
+                "valor_total": subtotal,
             }
         ]
 
@@ -345,11 +429,37 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
             return
 
         # Limpiar formulario
-        txt_descripcion.value = ""
+        dd_empresas.value = None
+        txt_fecha.value = date.today().isoformat()
+        txt_buscar_paciente.value = ""
+        resultados_pacientes.controls.clear()
+        txt_paciente_documento.value = ""
+        txt_paciente_nombre.value = ""
+
+        txt_descripcion.value = "Consulta Psicológica"
         txt_cantidad.value = "1"
         txt_valor_unitario.value = ""
         dd_iva_porcentaje.value = "0"
         _recalcular_totales()
+
+        # Refrescar los controles visibles
+        for c in [
+            dd_empresas,
+            txt_fecha,
+            txt_buscar_paciente,
+            resultados_pacientes,
+            txt_paciente_documento,
+            txt_paciente_nombre,
+            txt_descripcion,
+            txt_cantidad,
+            txt_valor_unitario,
+            dd_iva_porcentaje,
+            txt_subtotal,
+            txt_iva,
+            txt_total,
+        ]:
+            if c.page is not None:
+                c.update()
 
         page.snack_bar = ft.SnackBar(
             content=ft.Text(
@@ -371,7 +481,18 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
             content=ft.Column(
                 [
                     ft.Text("Creación de facturas", size=18, weight="bold"),
-                    ft.Row([dd_empresas, txt_fecha], spacing=10),
+                    ft.Row(
+                        [
+                            dd_empresas,
+                            txt_fecha,
+                            ft.IconButton(
+                                icon=ft.Icons.CALENDAR_MONTH,
+                                tooltip="Seleccionar fecha",
+                                on_click=_abrir_datepicker,
+                            ),
+                        ],
+                        spacing=10,
+                    ),
                     ft.Divider(),
                     ft.Text("Paciente", weight="bold"),
                     ft.Row([txt_buscar_paciente], spacing=10),
@@ -409,18 +530,27 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
         ),
     )
 
+
     card_listado_facturas = ft.Card(
-        content=ft.Container(
-            padding=10,
-            content=ft.Column(
-                [
-                    ft.Text("Facturas de convenio", size=18, weight="bold"),
-                    facturas_table,
-                ],
-                spacing=10,
-            ),
+    content=ft.Container(
+        padding=10,
+        content=ft.Column(
+            [
+                ft.Text("Facturas de convenio", size=18, weight="bold"),
+                ft.Container(
+                    height=260,  # 👉 alto fijo de la tabla
+                    content=ft.Column(
+                        [facturas_table],
+                        expand=True,
+                        scroll=ft.ScrollMode.AUTO,  # 👉 scroll interno
+                    ),
+                ),
+            ],
+            spacing=10,
         ),
-    )
+    ),
+)
+
 
     seccion_creacion = ft.Column(
         [

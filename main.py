@@ -47,6 +47,11 @@ def main(page: ft.Page):
     def mostrar_facturas(e=None):
         body.content = build_facturas_view(page)
         page.update()
+        # Registrar callback en page para que otras vistas (agenda) puedan llamar a Facturas
+    page.mostrar_facturas_cb = mostrar_facturas
+
+#
+
 
 # ----- Top Bar para admin -----
     top_bar = ft.Row(
