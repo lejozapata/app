@@ -4,6 +4,7 @@ from admin_view import build_admin_view
 from agenda_view import build_agenda_view
 from pacientes_view import build_pacientes_view
 from facturas_view import build_facturas_view
+from historia_view import build_historia_view
 
 
 def main(page: ft.Page):
@@ -49,6 +50,11 @@ def main(page: ft.Page):
         page.update()
         # Registrar callback en page para que otras vistas (agenda) puedan llamar a Facturas
     page.mostrar_facturas_cb = mostrar_facturas
+
+    def mostrar_historia(e=None):
+        body.content = build_historia_view(page)
+        page.update()
+    page.mostrar_historia_cb = mostrar_historia
 
 #
 

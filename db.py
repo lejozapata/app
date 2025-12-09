@@ -262,6 +262,36 @@ def init_db() -> None:
         """
     )
 
+    ########### Historia clínica ################
+     # Tabla de historia clínica (una por paciente)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS historia_clinica (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            documento_paciente TEXT NOT NULL UNIQUE,
+            fecha_apertura TEXT NOT NULL,
+            motivo_consulta_inicial TEXT,
+            informacion_adicional TEXT,
+            FOREIGN KEY (documento_paciente) REFERENCES pacientes (documento)
+        );
+        """
+    )
+
+    # Tabla de sesiones clínicas (múltiples por historia)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sesiones_clinicas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            historia_id INTEGER NOT NULL,
+            fecha TEXT NOT NULL,
+            titulo TEXT,
+            contenido TEXT NOT NULL,
+            observaciones TEXT,
+            FOREIGN KEY (historia_id) REFERENCES historia_clinica (id)
+        );
+        """
+    )
+
 
     conn.commit()
     conn.close()
@@ -389,6 +419,18 @@ def eliminar_paciente(documento: str) -> None:
     cur.execute("DELETE FROM citas WHERE documento_paciente = ?;", (documento,))
     cur.execute("DELETE FROM antecedentes_medicos WHERE documento_paciente = ?;", (documento,))
     cur.execute("DELETE FROM antecedentes_psicologicos WHERE documento_paciente = ?;", (documento,))
+
+    # Eliminar sesiones e historia clínica asociada
+    cur.execute(
+        """
+        DELETE FROM sesiones_clinicas
+        WHERE historia_id IN (
+            SELECT id FROM historia_clinica WHERE documento_paciente = ?
+        );
+        """,
+        (documento,),
+    )
+    cur.execute("DELETE FROM historia_clinica WHERE documento_paciente = ?;", (documento,))
 
     # Luego el paciente
     cur.execute("DELETE FROM pacientes WHERE documento = ?;", (documento,))
@@ -532,6 +574,162 @@ def eliminar_antecedente_psicologico(antecedente_id: int) -> None:
 
     conn.commit()
     conn.close()
+
+# --------- HISTORIA CLÍNICA Y SESIONES CLÍNICAS ---------
+
+
+def obtener_historia_clinica(documento_paciente: str) -> Optional[sqlite3.Row]:
+    """Obtiene la historia clínica de un paciente (si existe)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT *
+        FROM historia_clinica
+        WHERE documento_paciente = ?;
+        """,
+        (documento_paciente,),
+    )
+    fila = cur.fetchone()
+    conn.close()
+    return fila
+
+
+def guardar_historia_clinica(datos: Dict[str, Any]) -> int:
+    """
+    Crea o actualiza la historia clínica de un paciente.
+    Si datos["id"] existe, actualiza; si no, crea y devuelve el nuevo id.
+    Espera:
+      - id (opcional)
+      - documento_paciente
+      - fecha_apertura (YYYY-MM-DD)
+      - motivo_consulta_inicial
+      - informacion_adicional
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    if datos.get("id"):
+        cur.execute(
+            """
+            UPDATE historia_clinica
+            SET fecha_apertura = ?, motivo_consulta_inicial = ?, informacion_adicional = ?
+            WHERE id = ?;
+            """,
+            (
+                datos.get("fecha_apertura"),
+                datos.get("motivo_consulta_inicial"),
+                datos.get("informacion_adicional"),
+                datos.get("id"),
+            ),
+        )
+        historia_id = datos["id"]
+    else:
+        cur.execute(
+            """
+            INSERT INTO historia_clinica (
+                documento_paciente,
+                fecha_apertura,
+                motivo_consulta_inicial,
+                informacion_adicional
+            ) VALUES (?, ?, ?, ?);
+            """,
+            (
+                datos.get("documento_paciente"),
+                datos.get("fecha_apertura"),
+                datos.get("motivo_consulta_inicial"),
+                datos.get("informacion_adicional"),
+            ),
+        )
+        historia_id = cur.lastrowid
+
+    conn.commit()
+    conn.close()
+    return historia_id
+
+
+def listar_sesiones_clinicas(historia_id: int) -> List[sqlite3.Row]:
+    """Lista sesiones clínicas de una historia, ordenadas de la más reciente a la más antigua."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT *
+        FROM sesiones_clinicas
+        WHERE historia_id = ?
+        ORDER BY fecha DESC, id DESC;
+        """,
+        (historia_id,),
+    )
+    filas = cur.fetchall()
+    conn.close()
+    return filas
+
+
+def guardar_sesion_clinica(datos: Dict[str, Any]) -> int:
+    """
+    Crea o actualiza una sesión clínica.
+    Espera:
+      - id (opcional)
+      - historia_id
+      - fecha (YYYY-MM-DD)
+      - titulo
+      - contenido
+      - observaciones
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    if datos.get("id"):
+        cur.execute(
+            """
+            UPDATE sesiones_clinicas
+            SET fecha = ?, titulo = ?, contenido = ?, observaciones = ?
+            WHERE id = ?;
+            """,
+            (
+                datos.get("fecha"),
+                datos.get("titulo"),
+                datos.get("contenido"),
+                datos.get("observaciones"),
+                datos.get("id"),
+            ),
+        )
+        sesion_id = datos["id"]
+    else:
+        cur.execute(
+            """
+            INSERT INTO sesiones_clinicas (
+                historia_id,
+                fecha,
+                titulo,
+                contenido,
+                observaciones
+            ) VALUES (?, ?, ?, ?, ?);
+            """,
+            (
+                datos.get("historia_id"),
+                datos.get("fecha"),
+                datos.get("titulo"),
+                datos.get("contenido"),
+                datos.get("observaciones"),
+            ),
+        )
+        sesion_id = cur.lastrowid
+
+    conn.commit()
+    conn.close()
+    return sesion_id
+
+
+def eliminar_sesion_clinica(sesion_id: int) -> None:
+    """Elimina una sesión clínica por id."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM sesiones_clinicas WHERE id = ?;", (sesion_id,))
+    conn.commit()
+    conn.close()
+
 
 
 

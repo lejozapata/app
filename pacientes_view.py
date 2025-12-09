@@ -585,6 +585,11 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
                             doc
                         ),
                     ),
+
+                    ft.TextButton(
+                        "Historia clínica",
+                        on_click=lambda ev, doc=p["documento"]: abrir_historia(doc),
+                    ),
                     ft.TextButton(
                         "Eliminar",
                         on_click=lambda ev, doc=p["documento"]: confirmar_eliminar_paciente(
@@ -874,6 +879,29 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         mensaje_estado.color = "green"
         mostrar_snackbar(f"Paciente {doc} eliminado.")
         page.update()
+
+
+    def abrir_historia(doc: str):
+        """Navega a la vista de Historia clínica para este paciente."""
+        # Guardar el documento en la sesión (o como atributo de fallback)
+        try:
+            page.session.set("historia_paciente_documento", doc)
+        except Exception:
+            setattr(page, "historia_paciente_documento", doc)
+
+        # Buscar callback registrado en main.py
+        cb = getattr(page, "mostrar_historia_cb", None)
+        if callable(cb):
+            cb(None)
+        else:
+            # Fallback si por alguna razón no existe mostrar_historia_cb
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text(
+                    "La vista de Historia clínica no está disponible."
+                )
+            )
+            page.snack_bar.open = True
+            page.update()
 
     def confirmar_eliminar_paciente(doc: str):
         """Muestra un diálogo de confirmación antes de eliminar un paciente."""
