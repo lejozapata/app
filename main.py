@@ -5,6 +5,7 @@ from agenda_view import build_agenda_view
 from pacientes_view import build_pacientes_view
 from facturas_view import build_facturas_view
 from historia_view import build_historia_view
+from finanzas_view import build_finanzas_view
 
 
 def main(page: ft.Page):
@@ -51,6 +52,10 @@ def main(page: ft.Page):
         # Registrar callback en page para que otras vistas (agenda) puedan llamar a Facturas
     page.mostrar_facturas_cb = mostrar_facturas
 
+    def mostrar_finanzas(e=None):
+        body.content = build_finanzas_view(page)
+        body.update()
+
     def mostrar_historia(e=None):
         body.content = build_historia_view(page)
         page.update()
@@ -67,6 +72,7 @@ def main(page: ft.Page):
                     ft.ElevatedButton("Pacientes", on_click=mostrar_pacientes),
                     ft.ElevatedButton("Agendar", on_click=mostrar_agenda),
                     ft.ElevatedButton("Facturas", on_click=mostrar_facturas),
+                    ft.ElevatedButton("Finanzas", on_click=mostrar_finanzas),
                 ]
             ),
             ft.Container(expand=True),

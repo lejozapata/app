@@ -1,6 +1,7 @@
 import sqlite3
 from pathlib import Path
 from typing import Dict, List, Any, Optional
+from datetime import date, datetime, timedelta
 
 
 # ----------------- Reglas de negocio de citas -----------------
@@ -228,6 +229,19 @@ def init_db() -> None:
         """
     )
 
+    # Tabla de gastos financieros (arriendo de consultorio, otros gastos)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS gastos_financieros (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fecha TEXT NOT NULL,          -- 'YYYY-MM-DD'
+            tipo TEXT NOT NULL,           -- ej: 'arriendo_consultorio', 'otro'
+            descripcion TEXT,
+            monto REAL NOT NULL           -- siempre positivo
+        );
+        """
+    )
+
     # Tabla de horario por día (0=Lunes .. 6=Domingo)
     cur.execute(
         """
@@ -291,6 +305,20 @@ def init_db() -> None:
         );
         """
     )
+
+    # Tabla de paquetes de arriendo de consultorio
+    cur.execute(
+    """
+    CREATE TABLE IF NOT EXISTS paquetes_arriendo (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        fecha_compra TEXT NOT NULL,   -- 'YYYY-MM-DD'
+        cantidad_citas INTEGER NOT NULL,
+        costo_total REAL NOT NULL,
+        citas_usadas INTEGER NOT NULL DEFAULT 0,
+        notas TEXT
+    );
+    """
+)
 
 
     conn.commit()
@@ -1821,6 +1849,278 @@ def listar_facturas_convenio(
     rows = cur.fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# ===================== FINANZAS =====================
+
+
+def registrar_gasto_financiero(gasto: Dict[str, Any]) -> None:
+    """
+    Registra un gasto financiero.
+
+    Espera claves:
+      - fecha (str 'YYYY-MM-DD')
+      - tipo (str, ej: 'arriendo_consultorio', 'otro')
+      - descripcion (str opcional)
+      - monto (float positivo)
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    fecha = (gasto.get("fecha") or "").strip()
+    if not fecha:
+        # Si no viene fecha, usar hoy
+        fecha = date.today().strftime("%Y-%m-%d")
+
+    tipo = (gasto.get("tipo") or "otro").strip() or "otro"
+    descripcion = (gasto.get("descripcion") or "").strip()
+    monto = float(gasto.get("monto") or 0)
+
+    cur.execute(
+        """
+        INSERT INTO gastos_financieros (fecha, tipo, descripcion, monto)
+        VALUES (?, ?, ?, ?);
+        """,
+        (fecha, tipo, descripcion, monto),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def listar_gastos_financieros(
+    fecha_desde: Optional[str] = None,
+    fecha_hasta: Optional[str] = None,
+    tipo: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Devuelve una lista de gastos financieros con filtros opcionales:
+      - fecha_desde, fecha_hasta (str 'YYYY-MM-DD')
+      - tipo (str)
+    Ordenados por fecha ASC.
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    condiciones = []
+    params: List[Any] = []
+
+    if fecha_desde:
+        condiciones.append("date(fecha) >= date(?)")
+        params.append(fecha_desde)
+
+    if fecha_hasta:
+        condiciones.append("date(fecha) <= date(?)")
+        params.append(fecha_hasta)
+
+    if tipo:
+        condiciones.append("tipo = ?")
+        params.append(tipo)
+
+    where_clause = ""
+    if condiciones:
+        where_clause = "WHERE " + " AND ".join(condiciones)
+
+    sql = f"""
+        SELECT id, fecha, tipo, descripcion, monto
+        FROM gastos_financieros
+        {where_clause}
+        ORDER BY date(fecha) ASC, id ASC;
+    """
+
+    cur.execute(sql, params)
+    rows = cur.fetchall()
+    conn.close()
+
+    return [dict(r) for r in rows]
+
+
+def _primer_y_ultimo_dia_mes(anio: int, mes: int) -> tuple[str, str]:
+    """
+    Devuelve (fecha_desde, fecha_hasta) del mes indicado en formato 'YYYY-MM-DD'.
+    """
+    primer_dia = date(anio, mes, 1)
+    # calcular primer día del mes siguiente
+    if mes == 12:
+        siguiente_mes = date(anio + 1, 1, 1)
+    else:
+        siguiente_mes = date(anio, mes + 1, 1)
+
+    ultimo_dia = siguiente_mes - timedelta(days=1)
+
+    return (
+        primer_dia.strftime("%Y-%m-%d"),
+        ultimo_dia.strftime("%Y-%m-%d"),
+    )
+
+
+def resumen_financiero_periodo(fecha_desde: str, fecha_hasta: str) -> Dict[str, Any]:
+    """
+    Calcula un resumen financiero entre fecha_desde y fecha_hasta (incluidas).
+
+    - Ingresos por citas particulares (virtual/presencial) que estén pagadas.
+    - Conteo de citas de convenio.
+    - Ingresos por facturas de convenio (por estado).
+      * Para no duplicar ingresos, solo se toma el valor económico de las
+        facturas de convenio, no el campo 'precio' de las citas de tipo
+        'convenio_empresarial'.
+    - Gastos (arriendo de consultorio y otros).
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    # ---- Ingresos por citas particulares (virtual/presencial) ----
+    cur.execute(
+        """
+        SELECT
+            modalidad,
+            COUNT(*) AS cantidad,
+            COALESCE(SUM(precio), 0) AS total
+        FROM citas
+        WHERE pagado = 1
+          AND modalidad IN ('presencial', 'virtual')
+          AND date(fecha_hora) BETWEEN date(?) AND date(?)
+        GROUP BY modalidad;
+        """,
+        (fecha_desde, fecha_hasta),
+    )
+    filas_citas = cur.fetchall()
+
+    ingresos_citas: Dict[str, Dict[str, Any]] = {
+        "presencial": {"cantidad": 0, "total": 0.0},
+        "virtual": {"cantidad": 0, "total": 0.0},
+    }
+
+    for r in filas_citas:
+        mod = r["modalidad"]
+        if mod in ingresos_citas:
+            ingresos_citas[mod]["cantidad"] = int(r["cantidad"] or 0)
+            ingresos_citas[mod]["total"] = float(r["total"] or 0)
+
+    # ---- Conteo de citas de convenio (solo conteo, no valor económico) ----
+    cur.execute(
+        """
+        SELECT COUNT(*) AS cantidad
+        FROM citas
+        WHERE modalidad = 'convenio_empresarial'
+          AND date(fecha_hora) BETWEEN date(?) AND date(?);
+        """,
+        (fecha_desde, fecha_hasta),
+    )
+    row_convenios_citas = cur.fetchone()
+    cantidad_citas_convenio = int(row_convenios_citas["cantidad"] or 0)
+
+    # ---- Facturas de convenio (ingresos por convenio) ----
+    # Ignoramos las facturas anuladas para el cálculo de ingresos.
+    cur.execute(
+        """
+        SELECT
+            estado,
+            COUNT(*) AS cantidad,
+            COALESCE(SUM(total), 0) AS total
+        FROM facturas_convenio
+        WHERE estado != 'anulada'
+          AND date(fecha) BETWEEN date(?) AND date(?)
+        GROUP BY estado;
+        """,
+        (fecha_desde, fecha_hasta),
+    )
+    filas_facturas = cur.fetchall()
+
+    facturas_por_estado: Dict[str, Dict[str, Any]] = {}
+    total_facturas_emitidas = 0.0
+    total_facturas_pagadas = 0.0
+
+    for r in filas_facturas:
+        estado = (r["estado"] or "").lower()
+        cantidad = int(r["cantidad"] or 0)
+        total = float(r["total"] or 0)
+
+        facturas_por_estado[estado] = {
+            "cantidad": cantidad,
+            "total": total,
+        }
+
+        total_facturas_emitidas += total
+        if estado == "pagada":
+            total_facturas_pagadas += total
+
+    # ---- Gastos financieros ----
+    cur.execute(
+        """
+        SELECT
+            tipo,
+            COALESCE(SUM(monto), 0) AS total
+        FROM gastos_financieros
+        WHERE date(fecha) BETWEEN date(?) AND date(?)
+        GROUP BY tipo;
+        """,
+        (fecha_desde, fecha_hasta),
+    )
+    filas_gastos = cur.fetchall()
+    conn.close()
+
+    gastos_por_tipo: Dict[str, float] = {}
+    total_gastos = 0.0
+
+    for r in filas_gastos:
+        tipo = r["tipo"]
+        total = float(r["total"] or 0)
+        gastos_por_tipo[tipo] = total
+        total_gastos += total
+
+    total_presencial = ingresos_citas["presencial"]["total"]
+    total_virtual = ingresos_citas["virtual"]["total"]
+    total_citas_particulares = total_presencial + total_virtual
+
+    total_ingresos_cobrados = total_citas_particulares + total_facturas_pagadas
+    total_ingresos_facturados = total_citas_particulares + total_facturas_emitidas
+
+    utilidad_neta_cobrada = total_ingresos_cobrados - total_gastos
+    utilidad_neta_facturada = total_ingresos_facturados - total_gastos
+
+    return {
+        "rango": {
+            "desde": fecha_desde,
+            "hasta": fecha_hasta,
+        },
+        "ingresos": {
+            "citas": {
+                "presencial": ingresos_citas["presencial"],
+                "virtual": ingresos_citas["virtual"],
+                "total_particulares": total_citas_particulares,
+            },
+            "convenios": {
+                "cantidad_citas": cantidad_citas_convenio,
+                "facturas_por_estado": facturas_por_estado,
+                "total_facturas_emitidas": total_facturas_emitidas,
+                "total_facturas_pagadas": total_facturas_pagadas,
+            },
+            "total_cobrado": total_ingresos_cobrados,
+            "total_facturado": total_ingresos_facturados,
+        },
+        "gastos": {
+            "por_tipo": gastos_por_tipo,
+            "total_gastos": total_gastos,
+        },
+        "utilidad": {
+            "neta_cobrada": utilidad_neta_cobrada,
+            "neta_facturada": utilidad_neta_facturada,
+        },
+    }
+
+
+def resumen_financiero_mensual(anio: int, mes: int) -> Dict[str, Any]:
+    """
+    Atajo para obtener el resumen financiero de un mes específico.
+    """
+    desde, hasta = _primer_y_ultimo_dia_mes(anio, mes)
+    data = resumen_financiero_periodo(desde, hasta)
+    data["periodo"] = {"anio": anio, "mes": mes}
+    return data
+
 
 
 # ------------ FIN -------------

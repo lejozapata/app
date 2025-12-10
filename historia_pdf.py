@@ -1,9 +1,11 @@
 import os
-from datetime import datetime
+from datetime import datetime, date
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib.styles import ParagraphStyle
+import re
+from xml.sax.saxutils import escape
 from reportlab.platypus import (
     SimpleDocTemplate,
     Paragraph,
@@ -83,19 +85,84 @@ SMALL_STYLE = ParagraphStyle(
 )
 
 
-def _p(text: str, style: ParagraphStyle = NORMAL_STYLE, bold: bool = False):
+def markdown_to_html(text: str) -> str:
+    """
+    Convierte un subset sencillo de Markdown a HTML soportado por reportlab:
+    - **texto** -> <b>texto</b>
+    - _texto_  -> <i>texto</i>
+    - ==texto== -> <font color="#ff7b47">texto</font> (resaltado naranja)
+    - Saltos de línea -> <br/>
+    """
+
+    if text is None:
+        return ""
+
+    text = str(text)
+
+    text = escape(text)
+
+    text = re.sub(
+        r"==(.+?)==",
+        r'<font color="#ff7b47">\1</font>',
+        text,
+        flags=re.DOTALL,
+    )
+
+    text = re.sub(
+        r"\*\*(.+?)\*\*",
+        r"<b>\1</b>",
+        text,
+        flags=re.DOTALL,
+    )
+
+    text = re.sub(
+        r"_(.+?)_",
+        r"<i>\1</i>",
+        text,
+        flags=re.DOTALL,
+    )
+
+    text = text.replace("\n", "<br/>")
+
+    return text
+
+
+def _p(
+    text: str,
+    style: ParagraphStyle = NORMAL_STYLE,
+    bold: bool = False,
+    use_markdown: bool = True,
+):
+    """
+    Helper para crear Paragraph:
+    - Si use_markdown=True, interpreta Markdown sencillo (**, _, ==).
+    - Si bold=True, envuelve todo el resultado en <b>.
+    """
+    if use_markdown:
+        html = markdown_to_html(text)
+    else:
+        html = escape(str(text or ""))
+
     if bold:
-        text = f"<b>{text}</b>"
-    return Paragraph(text, style)
+        html = f"<b>{html}</b>"
+
+    return Paragraph(html, style)
 
 
 # ---------- Generación de PDF de historia clínica ----------
 
 
-def generar_pdf_historia(documento_paciente: str, abrir: bool = True) -> str:
+def generar_pdf_historia(
+    documento_paciente: str,
+    abrir: bool = True,
+    fecha_desde: date | None = None,
+    fecha_hasta: date | None = None,
+) -> str:
     """
-    Genera el PDF completo de historia clínica del paciente.
-    Se crea (o sobreescribe) en carpeta ./historias_pdf/ dentro de la ruta de datos.
+    Genera el PDF de historia clínica del paciente.
+    Si se proporcionan fecha_desde y fecha_hasta, solo incluye las sesiones
+    dentro de ese rango (ambos extremos inclusive).
+    El archivo se crea en ./historias_pdf/ dentro de la ruta de datos.
     """
     pac_row = obtener_paciente(documento_paciente)
     if not pac_row:
@@ -110,8 +177,29 @@ def generar_pdf_historia(documento_paciente: str, abrir: bool = True) -> str:
     historia = dict(historia_row)
 
     sesiones_rows = listar_sesiones_clinicas(historia["id"])
-    # más antiguas primero
-    sesiones = [dict(s) for s in sesiones_rows][::-1]
+    sesiones = [dict(s) for s in sesiones_rows][::-1]  # más antiguas primero
+
+    # --- Filtrado opcional por rango de fechas ---
+    if fecha_desde and fecha_hasta:
+        def _parse_fecha(fecha_raw):
+            if isinstance(fecha_raw, datetime):
+                return fecha_raw.date()
+            if isinstance(fecha_raw, date):
+                return fecha_raw
+            try:
+                return datetime.strptime(str(fecha_raw)[:10], "%Y-%m-%d").date()
+            except Exception:
+                return None
+
+        fd = fecha_desde if isinstance(fecha_desde, date) else _parse_fecha(fecha_desde)
+        fh = fecha_hasta if isinstance(fecha_hasta, date) else _parse_fecha(fecha_hasta)
+
+        if fd and fh:
+            sesiones = [
+                s
+                for s in sesiones
+                if (d := _parse_fecha(s.get("fecha"))) is not None and fd <= d <= fh
+            ]
 
     antecedentes_med = listar_antecedentes_medicos(documento_paciente)
     antecedentes_psico = listar_antecedentes_psicologicos(documento_paciente)
@@ -122,7 +210,6 @@ def generar_pdf_historia(documento_paciente: str, abrir: bool = True) -> str:
         f"{pac['nombre_completo']} - Historia Clínica.pdf",
     )
 
-    # Documento A4 con márgenes en mm (alineado al de facturas)
     doc = SimpleDocTemplate(
         archivo_pdf,
         pagesize=A4,
@@ -137,11 +224,10 @@ def generar_pdf_historia(documento_paciente: str, abrir: bool = True) -> str:
     # ---------- Encabezado: logo + título ----------
     if os.path.exists(logo_path):
         img = Image(logo_path)
-        img._restrictSize(35 * mm, 20 * mm)  # <--- Tamaño máximo permitido sin deformar
+        img._restrictSize(35 * mm, 20 * mm)
         img.hAlign = "LEFT"
         story.append(img)
         story.append(Spacer(1, 4))
-
 
     story.append(Paragraph("HISTORIA CLÍNICA", TITLE_STYLE))
 
@@ -152,7 +238,7 @@ def generar_pdf_historia(documento_paciente: str, abrir: bool = True) -> str:
     story.append(Spacer(1, 8))
 
     # ==========================================================
-    # DATOS DEL PACIENTE - tabla tipo ficha (3 bloques)
+    # DATOS DEL PACIENTE
     # ==========================================================
 
     story.append(Paragraph("Datos del paciente", SECTION_TITLE_STYLE))
@@ -162,7 +248,6 @@ def generar_pdf_historia(documento_paciente: str, abrir: bool = True) -> str:
         v = pac.get(campo)
         return v if v not in (None, "", "None") else "-"
 
-    # 3 bloques: (izq, centro, derecha) -> 4 filas
     datos_matrix = [
         [
             Paragraph("<b>Nombre completo:</b>", SMALL_STYLE),
@@ -198,11 +283,10 @@ def generar_pdf_historia(documento_paciente: str, abrir: bool = True) -> str:
         ],
     ]
 
-    # 6 columnas: etiqueta/valor x3 → ancho total 168mm (no se sale de 170mm)
     datos_table = Table(
-    datos_matrix,
-    colWidths=[28 * mm, 32 * mm, 28 * mm, 32 * mm, 28 * mm, 32 * mm],
-    hAlign="LEFT",
+        datos_matrix,
+        colWidths=[28 * mm, 32 * mm, 28 * mm, 32 * mm, 28 * mm, 32 * mm],
+        hAlign="LEFT",
     )
     datos_table.setStyle(
         TableStyle(
@@ -323,6 +407,7 @@ def generar_pdf_historia(documento_paciente: str, abrir: bool = True) -> str:
             story.append(
                 Table(
                     [[""]],
+
                     colWidths=[170 * mm],
                     style=TableStyle(
                         [
@@ -339,15 +424,7 @@ def generar_pdf_historia(documento_paciente: str, abrir: bool = True) -> str:
             )
             story.append(Spacer(1, 4))
 
-    # ==========================================================
-    # CONSTRUIR DOCUMENTO
-    # ==========================================================
-
     doc.build(story)
-
-    # ==========================================================
-    # ABRIR ARCHIVO
-    # ==========================================================
 
     if abrir:
         try:

@@ -585,19 +585,19 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
                             doc
                         ),
                     ),
-
-                    ft.TextButton(
-                        "Historia clínica",
-                        on_click=lambda ev, doc=p["documento"]: abrir_historia(doc),
-                    ),
                     ft.TextButton(
                         "Eliminar",
                         on_click=lambda ev, doc=p["documento"]: confirmar_eliminar_paciente(
                             doc
                         ),
                     ),
+                    ft.FilledButton(
+                        text="Historia clínica",
+                        icon=ft.Icons.DESCRIPTION,  # icono de documento / historia
+                        on_click=lambda ev, doc=p["documento"]: abrir_historia(doc),
+                    ),
                 ],
-                spacing=5,
+                spacing=8,
             )
 
             tabla_pacientes.rows.append(

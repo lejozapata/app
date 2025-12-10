@@ -764,25 +764,6 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
         scroll=ft.ScrollMode.AUTO,
     )
 
-    # ---------------------------------------------------------------------
-    # ================== 3. SECCIÓN: FINANZAS (placeholder) ===============
-    # ---------------------------------------------------------------------
-
-    seccion_finanzas = ft.Column(
-        [
-            ft.Text("Finanzas", size=18, weight="bold"),
-            ft.Text(
-                "Más adelante verás aquí un resumen financiero de facturas, pagos y convenios.",
-                size=12,
-                color=ft.Colors.GREY_700,
-            ),
-            ft.Divider(),
-            ft.Text("Esta sección está en construcción."),
-        ],
-        spacing=15,
-        expand=True,
-        scroll=ft.ScrollMode.AUTO,
-    )
 
     # ---------------------------------------------------------------------
     # ===================== Menú lateral + contenido ======================
@@ -796,19 +777,16 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
             contenido_derecha.content = seccion_creacion
         elif nueva == "empresas":
             contenido_derecha.content = seccion_empresas
-        elif nueva == "finanzas":
-            contenido_derecha.content = seccion_finanzas
 
         tile_creacion.selected = nueva == "creacion"
         tile_empresas.selected = nueva == "empresas"
-        tile_finanzas.selected = nueva == "finanzas"
+        
 
         if contenido_derecha.page is not None:
             contenido_derecha.update()
         if tile_creacion.page is not None:
             tile_creacion.update()
             tile_empresas.update()
-            tile_finanzas.update()
 
     tile_creacion = ft.ListTile(
         leading=ft.Icon(ft.Icons.RECEIPT_LONG),
@@ -824,12 +802,6 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
         on_click=lambda e: cambiar_seccion("empresas"),
     )
 
-    tile_finanzas = ft.ListTile(
-        leading=ft.Icon(ft.Icons.ANALYTICS),
-        title=ft.Text("Finanzas"),
-        selected=False,
-        on_click=lambda e: cambiar_seccion("finanzas"),
-    )
 
     menu_izquierdo = ft.Container(
         width=230,
@@ -848,7 +820,7 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
                 ft.Divider(),
                 tile_creacion,
                 tile_empresas,
-                tile_finanzas,
+    
             ],
             spacing=5,
         ),
