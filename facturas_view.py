@@ -11,6 +11,7 @@ from db import (
     crear_factura_convenio,
     listar_facturas_convenio,
     guardar_empresa_convenio,
+    actualizar_estado_factura_convenio
 )
 
 
@@ -310,6 +311,24 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
             page.snack_bar.open = True
             page.update()
 
+
+    def _marcar_factura_pagada(factura_id: int):
+        """
+        Cambia el estado de la factura a 'pagada' y recarga la tabla.
+        """
+        try:
+            actualizar_estado_factura_convenio(factura_id, "pagada")
+        except Exception as ex:
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"Error al actualizar factura: {ex}"),
+                bgcolor=ft.Colors.RED_300,
+            )
+            page.snack_bar.open = True
+            page.update()
+            return
+    
+        _cargar_facturas()
+
     def _cargar_facturas():
 
         facturas = sorted(
@@ -339,6 +358,25 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
                 on_click=lambda e, fid=fid: _generar_pdf_desde_ui(fid),
             )
 
+            # Botón para marcar como pagada (deshabilitado si ya está pagada)
+            if estado == "pagada":
+                btn_pagada = ft.IconButton(
+                    icon=ft.Icons.CHECK_CIRCLE,
+                    tooltip="Factura pagada",
+                    disabled=True,
+                )
+            else:
+                btn_pagada = ft.IconButton(
+                    icon=ft.Icons.CHECK_CIRCLE,
+                    tooltip="Marcar como pagada",
+                    on_click=lambda e, fid=fid: _marcar_factura_pagada(fid),
+                )
+
+            acciones = ft.Row(
+                controls=[btn_pagada, btn_pdf],
+                spacing=4,
+            )
+
             facturas_table.rows.append(
                 ft.DataRow(
                     cells=[
@@ -348,10 +386,11 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
                         ft.DataCell(ft.Text(paciente)),
                         ft.DataCell(ft.Text(total_txt)),
                         ft.DataCell(ft.Text(estado)),
-                        ft.DataCell(btn_pdf),
+                        ft.DataCell(acciones),
                     ]
                 )
             )
+
 
         page.update()
 
@@ -470,6 +509,8 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
 
         _cargar_facturas()
         page.update()
+
+    
 
     btn_guardar_factura = ft.ElevatedButton(
         "Guardar factura de convenio", icon=ft.Icons.SAVE, on_click=_guardar_factura

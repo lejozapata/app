@@ -120,10 +120,38 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
     # ==================== Notificación Whatsapp ====================
 
+
+    def _solo_digitos_whatsapp(s: str) -> str:
+        return "".join(c for c in (s or "") if c.isdigit())
+
+    def _paciente_tiene_whatsapp(pac: dict | None) -> bool:
+        """True si hay un teléfono mínimamente utilizable para WA."""
+        if not pac:
+            return False
+        tel = (pac.get("telefono") or "").strip()
+        if not tel:
+            return False
+        digits = _solo_digitos_whatsapp(tel)
+        return bool(digits)
+
     def enviar_whatsapp_confirmacion(e=None):
-        import locale
-        locale.setlocale(locale.LC_TIME, "Spanish_Spain")
         """Abre WhatsApp con un mensaje de confirmación de la cita actual."""
+        # Locale: mejor esfuerzo (en algunos Windows "Spanish_Spain" falla)
+        try:
+            import locale
+            try:
+                locale.setlocale(locale.LC_TIME, "Spanish_Spain")
+            except Exception:
+                # Alternativas comunes
+                for loc in ("es_ES.UTF-8", "es_ES", "Spanish", "es_CO.UTF-8", "es_CO"):
+                    try:
+                        locale.setlocale(locale.LC_TIME, loc)
+                        break
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
         pac = reserva.get("paciente")
         if not pac:
             page.snack_bar = ft.SnackBar(
@@ -134,42 +162,84 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             page.update()
             return
 
-        tel = (pac.get("telefono") or "").strip()
-        if not tel:
+        # ------------------ Helpers: indicativo y número WhatsApp ------------------
+        def _solo_digitos(s: str) -> str:
+            return "".join(c for c in (s or "") if c.isdigit())
+
+        def _cargar_iso2_a_code() -> dict:
+            """Carga countries.json (si existe) para resolver ISO2 -> phoneCode."""
+            try:
+                from pathlib import Path
+                import json
+                base_dir = Path(__file__).resolve().parents[1]
+                fp = base_dir / "data" / "countries.json"
+                if not fp.exists():
+                    return {}
+                data = json.loads(fp.read_text(encoding="utf-8"))
+                m = {}
+                for it in data or []:
+                    iso2 = (it.get("iso2") or "").strip().upper()
+                    code = _solo_digitos(it.get("phoneCode") or "")
+                    if iso2 and code:
+                        m[iso2] = code
+                return m
+            except Exception:
+                return {}
+
+        _ISO2_TO_CODE = _cargar_iso2_a_code()
+
+        def _resolver_indicativo(pac: dict) -> str:
+            """Devuelve indicativo en dígitos. Acepta que en BD venga '57' o 'CO'."""
+            raw = (pac.get("indicativo_pais") or "").strip()
+            if not raw:
+                return "57"
+
+            # Si viene ISO2 (CO, US, etc.)
+            if len(raw) == 2 and raw.isalpha():
+                return _ISO2_TO_CODE.get(raw.upper(), "57")
+
+            # Si viene como +57 o 57
+            digits = _solo_digitos(raw)
+            return digits or "57"
+
+        def construir_numero_whatsapp(pac: dict) -> str | None:
+            tel_raw = (pac.get("telefono") or "").strip()
+            if not tel_raw:
+                return None
+
+            # Si el teléfono ya viene en formato internacional con "+"
+            if tel_raw.startswith("+"):
+                digits = _solo_digitos(tel_raw)
+                return digits or None
+
+            digits = _solo_digitos(tel_raw)
+            if not digits:
+                return None
+
+            ind = _resolver_indicativo(pac)
+
+            # Si el usuario pegó todo junto sin "+" (ej: 57320...)
+            if ind and digits.startswith(ind):
+                return digits
+
+            return (ind + digits) if ind else digits
+
+        wa_num = construir_numero_whatsapp(pac)
+        if not wa_num:
             page.snack_bar = ft.SnackBar(
-                content=ft.Text("El paciente no tiene teléfono registrado."),
+                content=ft.Text("El paciente no tiene un teléfono válido registrado."),
                 bgcolor=ft.Colors.AMBER_300,
             )
             page.snack_bar.open = True
             page.update()
             return
-
-        # Dejar solo dígitos del teléfono
-        digits = "".join(c for c in tel if c.isdigit())
-        if not digits:
-            page.snack_bar = ft.SnackBar(
-                content=ft.Text("El número de teléfono del paciente no es válido."),
-                bgcolor=ft.Colors.AMBER_300,
-            )
-            page.snack_bar.open = True
-            page.update()
-            return
-
-        # Asumimos Colombia (+57); ajustable más adelante
-        if digits.startswith("57"):
-            wa_num = digits
-        elif digits.startswith("0"):
-            wa_num = "57" + digits.lstrip("0")
-        else:
-            wa_num = "57" + digits
 
         # -------- Datos de fecha / hora --------
         fecha_obj = reserva.get("fecha")
         try:
             fecha_str = fecha_obj.strftime("%A %d de %B de %Y")
-            # Capitalizar primera letra del día/mes
             fecha_str = fecha_str.capitalize()
-        except:
+        except Exception:
             fecha_str = "la fecha acordada"
 
         # Hora en formato 12h (ej: 2:00 p. m.)
@@ -184,31 +254,39 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
         # -------- Servicio / modalidad / valor --------
         srv = reserva.get("servicio") or {}
-        nombre_servicio = srv.get("nombre", "").strip()
+        nombre_servicio = (srv.get("nombre") or "").strip()
 
-        modalidad_raw = srv.get("tipo", "")  # presencial / virtual / convenio_empresarial
-        modalidad_map = {
+        # Compatibilidad: modelo viejo (tipo=presencial/virtual/convenio_empresarial)
+        tipo_raw = (srv.get("tipo") or "").strip()
+        tipo_map = {
             "presencial": "Presencial",
             "virtual": "Virtual",
             "convenio_empresarial": "Convenio empresarial",
         }
-        modalidad = modalidad_map.get(modalidad_raw, modalidad_raw or "Sin especificar")
+
+        # Modelo nuevo (modalidad=particular|convenio, canal=presencial|virtual)
+        mod_raw = (srv.get("modalidad") or "").strip()
+        canal_raw = (srv.get("canal") or "").strip()
+        mod_map = {"particular": "Particular", "convenio": "Convenio"}
+        canal_map = {"presencial": "Presencial", "virtual": "Virtual"}
+
+        if mod_raw in mod_map and canal_raw in canal_map:
+            modalidad = f"{mod_map[mod_raw]} / {canal_map[canal_raw]}"
+        else:
+            modalidad = tipo_map.get(tipo_raw, tipo_raw or "Sin especificar")
 
         # Valor (precio)
         valor_str = ""
         try:
-            # Limpiamos puntos/comas por si vienen formateados
-            valor_num = float(
-                txt_precio.value.replace(".", "").replace(",", ".")
-            )
-            valor_str = f"{valor_num:,.0f}".replace(",", ".")  # 110.000
+            valor_num = float((txt_precio.value or "").replace(".", "").replace(",", "."))
+            valor_str = f"{valor_num:,.0f}".replace(",", ".")
         except Exception:
             pass
 
         direccion = cfg.get("direccion") or ""
 
         # -------- Mensaje de WhatsApp --------
-        nombre_paciente = pac.get("nombre_completo", "").strip()
+        nombre_paciente = (pac.get("nombre_completo") or "").strip()
 
         msg_lines = [
             f"• Hola *{nombre_paciente}*,",
@@ -225,16 +303,15 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         if valor_str:
             msg_lines.append(f"• *Valor:* ${valor_str}")
 
-        if modalidad_raw == "presencial" and direccion:
+        # Si es presencial, incluir dirección (modelo viejo o nuevo)
+        es_presencial = (tipo_raw == "presencial") or (canal_raw == "presencial")
+        if es_presencial and direccion:
             msg_lines.append(f"• *Dirección:* {direccion}")
 
         msg_lines.append("")
-        msg_lines.append(
-            "Si necesitas reagendar o cancelar, por favor respóndeme por este medio."
-        )
+        msg_lines.append("Si necesitas reagendar o cancelar, por favor respóndeme por este medio.")
 
         msg = "\n".join(msg_lines)
-
         url = f"https://wa.me/{wa_num}?text={urllib.parse.quote(msg)}"
         page.launch_url(url)
 
@@ -571,6 +648,17 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             txt_buscar_paciente.update()
             titulo_reserva.update()
             chk_notificar_email.update()
+
+    
+        # Mostrar / ocultar el botón de WhatsApp según si el paciente tiene teléfono
+        if _paciente_tiene_whatsapp(pac):
+            btn_whatsapp_confirmacion.visible = True
+            btn_whatsapp_confirmacion.disabled = False
+        else:
+            btn_whatsapp_confirmacion.visible = False
+            btn_whatsapp_confirmacion.disabled = True
+        if btn_whatsapp_confirmacion.page is not None:
+            btn_whatsapp_confirmacion.update()
 
     def quitar_paciente():
         reserva["paciente"] = None
@@ -1521,13 +1609,17 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             "nombre_completo": cita_row["nombre_completo"],
             "telefono": cita_row.get("telefono", ""),
             "email": cita_row.get("email", ""),
+            "indicativo_pais": cita_row.get("indicativo_pais", "") or "57",
         }
         paciente_cita_editando["value"] = pac
         seleccionar_paciente(pac)
-
-        # En edición: mostramos y habilitamos el botón de WhatsApp
-        btn_whatsapp_confirmacion.visible = True
-        btn_whatsapp_confirmacion.disabled = False
+        # En edición: mostrar botón de WhatsApp solo si hay teléfono
+        if _paciente_tiene_whatsapp(pac):
+            btn_whatsapp_confirmacion.visible = True
+            btn_whatsapp_confirmacion.disabled = False
+        else:
+            btn_whatsapp_confirmacion.visible = False
+            btn_whatsapp_confirmacion.disabled = True
         if btn_whatsapp_confirmacion.page is not None:
             btn_whatsapp_confirmacion.update()
 

@@ -62,6 +62,7 @@ def init_db() -> None:
             eps TEXT,
             direccion TEXT,
             email TEXT,
+            indicativo_pais TEXT NOT NULL DEFAULT '57',
             telefono TEXT,
             contacto_emergencia_nombre TEXT,
             contacto_emergencia_telefono TEXT,
@@ -71,6 +72,13 @@ def init_db() -> None:
         );
         """
     )
+
+
+    # Migración segura: agregar indicativo_pais si la tabla ya existía
+    cur.execute("PRAGMA table_info(pacientes);")
+    columnas_pacientes = [row[1] for row in cur.fetchall()]
+    if "indicativo_pais" not in columnas_pacientes:
+        cur.execute("ALTER TABLE pacientes ADD COLUMN indicativo_pais TEXT NOT NULL DEFAULT '57';")
 
       # Tabla de citas
     cur.execute(
@@ -308,17 +316,49 @@ def init_db() -> None:
 
     # Tabla de paquetes de arriendo de consultorio
     cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS paquetes_arriendo (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fecha_compra TEXT NOT NULL,   -- 'YYYY-MM-DD'
+            cantidad_citas INTEGER NOT NULL,
+            costo_total REAL NOT NULL,
+            citas_usadas INTEGER NOT NULL DEFAULT 0,
+            notas TEXT
+        );
+        """
+    )
+    
+
+    # Tabla de paquetes de consultorio (sesiones prepagadas)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS paquetes_consultorio (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fecha_compra TEXT NOT NULL,
+            descripcion TEXT,
+            precio_total REAL NOT NULL,
+            cantidad_sesiones INTEGER NOT NULL,
+            sesiones_restantes INTEGER NOT NULL,
+            activo INTEGER NOT NULL DEFAULT 1
+        );
+        """
+    )
+    
+
+    # Tabla de consumo de paquetes de consultorio
+    cur.execute(
     """
-    CREATE TABLE IF NOT EXISTS paquetes_arriendo (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        fecha_compra TEXT NOT NULL,   -- 'YYYY-MM-DD'
-        cantidad_citas INTEGER NOT NULL,
-        costo_total REAL NOT NULL,
-        citas_usadas INTEGER NOT NULL DEFAULT 0,
-        notas TEXT
-    );
-    """
-)
+
+        CREATE TABLE IF NOT EXISTS consumo_paquetes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            paquete_id INTEGER NOT NULL,
+            cita_id INTEGER NOT NULL,
+            fecha TEXT NOT NULL,
+            FOREIGN KEY(paquete_id) REFERENCES paquetes_consultorio(id),
+            FOREIGN KEY(cita_id) REFERENCES citas(id)
+        );
+        """
+    )
 
 
     conn.commit()
@@ -334,6 +374,10 @@ def crear_paciente(paciente: Dict[str, Any]) -> None:
     conn = get_connection()
     cur = conn.cursor()
 
+    datos = dict(paciente)
+    # Compatibilidad: si no viene indicativo_pais, asumimos Colombia (57)
+    datos.setdefault('indicativo_pais', '57')
+
     cur.execute(
         """
         INSERT INTO pacientes (
@@ -347,6 +391,7 @@ def crear_paciente(paciente: Dict[str, Any]) -> None:
             eps,
             direccion,
             email,
+            indicativo_pais,
             telefono,
             contacto_emergencia_nombre,
             contacto_emergencia_telefono,
@@ -362,13 +407,14 @@ def crear_paciente(paciente: Dict[str, Any]) -> None:
             :eps,
             :direccion,
             :email,
+            :indicativo_pais,
             :telefono,
             :contacto_emergencia_nombre,
             :contacto_emergencia_telefono,
             :observaciones
         );
         """,
-        paciente,
+        datos,
     )
 
     conn.commit()
@@ -411,6 +457,9 @@ def actualizar_paciente(paciente: Dict[str, Any]) -> None:
     conn = get_connection()
     cur = conn.cursor()
 
+    datos = dict(paciente)
+    datos.setdefault('indicativo_pais', '57')
+
     cur.execute(
         """
         UPDATE pacientes
@@ -424,6 +473,7 @@ def actualizar_paciente(paciente: Dict[str, Any]) -> None:
             eps = :eps,
             direccion = :direccion,
             email = :email,
+            indicativo_pais = :indicativo_pais,
             telefono = :telefono,
             contacto_emergencia_nombre = :contacto_emergencia_nombre,
             contacto_emergencia_telefono = :contacto_emergencia_telefono,
@@ -860,6 +910,7 @@ def listar_citas_con_paciente_rango(fecha_inicio: str, fecha_fin: str) -> List[s
         SELECT
             c.*,
             p.nombre_completo,
+            p.indicativo_pais,
             p.telefono,
             p.email
         FROM citas c
@@ -1248,6 +1299,9 @@ def guardar_configuracion_facturacion(cfg: dict) -> None:
 
     conn.commit()
     conn.close()
+
+
+
 
 
 
@@ -1850,6 +1904,43 @@ def listar_facturas_convenio(
     conn.close()
     return [dict(r) for r in rows]
 
+def actualizar_estado_factura_convenio(factura_id: int, nuevo_estado: str) -> None:
+    """
+    Actualiza el estado de una factura de convenio:
+    estados típicos: 'pendiente', 'pagada', 'anulada'
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        UPDATE facturas_convenio
+        SET estado = ?, actualizada_en = datetime('now','localtime')
+        WHERE id = ?;
+        """,
+        (nuevo_estado, factura_id),
+    )
+
+    conn.commit()
+    conn.close()
+
+def eliminar_gasto_financiero(gasto_id: int) -> None:
+    """
+    Elimina un gasto financiero por id.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        "DELETE FROM gastos_financieros WHERE id = ?;",
+        (gasto_id,),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+
 
 # ===================== FINANZAS =====================
 
@@ -2120,6 +2211,346 @@ def resumen_financiero_mensual(anio: int, mes: int) -> Dict[str, Any]:
     data = resumen_financiero_periodo(desde, hasta)
     data["periodo"] = {"anio": anio, "mes": mes}
     return data
+
+
+# =========================================================
+#  FINANZAS: GASTOS Y RESUMEN MENSUAL
+# =========================================================
+
+def registrar_gasto_financiero(gasto: Dict[str, Any]) -> int:
+    """
+    Registra un gasto financiero en la tabla gastos_financieros.
+
+    gasto debe tener:
+      - fecha: 'YYYY-MM-DD'
+      - tipo: 'arriendo_consultorio', 'otro', etc.
+      - descripcion: texto (puede ser None)
+      - monto: float (positivo)
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        INSERT INTO gastos_financieros (fecha, tipo, descripcion, monto)
+        VALUES (:fecha, :tipo, :descripcion, :monto);
+        """,
+        gasto,
+    )
+    conn.commit()
+    gasto_id = cur.lastrowid
+    conn.close()
+    return gasto_id
+
+
+def _rango_mes(anio: int, mes: int) -> Dict[str, str]:
+    """
+    Devuelve {'desde': 'YYYY-MM-DD', 'hasta': 'YYYY-MM-DD'} para el mes completo.
+    """
+    inicio = date(anio, mes, 1)
+    if mes == 12:
+        siguiente = date(anio + 1, 1, 1)
+    else:
+        siguiente = date(anio, mes + 1, 1)
+
+    fin = siguiente - timedelta(days=1)
+
+    return {
+        "desde": inicio.strftime("%Y-%m-%d"),
+        "hasta": fin.strftime("%Y-%m-%d"),
+    }
+
+
+def resumen_financiero_mensual(anio: int, mes: int) -> Dict[str, Any]:
+    """
+    Calcula el resumen financiero del mes usando el modelo ACTUAL:
+
+      - Ingresos por citas particulares (virtual / presencial) pagadas
+        (modalidad = 'virtual' o 'presencial', pagado = 1).
+
+      - Convenios:
+        * cantidad de citas modalidad = 'convenio_empresarial' (carga de trabajo)
+        * facturas de convenio (tabla facturas_convenio) agrupadas por estado.
+
+      - Gastos:
+        * de la tabla gastos_financieros, por tipo y total.
+
+      - Utilidad:
+        * ingresos_brutos        = particulares + total_facturas_emitidas
+        * ingresos_cobrados      = particulares + facturas estado 'pagada'
+        * utilidad_neta_cobrada  = ingresos_cobrados - total_gastos
+    """
+    rango = _rango_mes(anio, mes)
+    f_desde = rango["desde"]
+    f_hasta = rango["hasta"]
+
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    # ----- Citas particulares pagadas (virtual + presencial) -----
+    cur.execute(
+        """
+        SELECT modalidad,
+               COUNT(*)            AS cantidad,
+               IFNULL(SUM(precio), 0) AS total
+        FROM citas
+        WHERE date(fecha_hora) BETWEEN ? AND ?
+          AND pagado = 1
+          AND modalidad IN ('virtual', 'presencial')
+        GROUP BY modalidad;
+        """,
+        (f_desde, f_hasta),
+    )
+    filas_citas = cur.fetchall()
+
+    citas_presencial = {"cantidad": 0, "total": 0.0}
+    citas_virtual = {"cantidad": 0, "total": 0.0}
+
+    for fila in filas_citas:
+        mod = fila["modalidad"]
+        if mod == "presencial":
+            citas_presencial["cantidad"] = fila["cantidad"]
+            citas_presencial["total"] = float(fila["total"] or 0)
+        elif mod == "virtual":
+            citas_virtual["cantidad"] = fila["cantidad"]
+            citas_virtual["total"] = float(fila["total"] or 0)
+
+    total_particulares = citas_presencial["total"] + citas_virtual["total"]
+
+    # ----- Citas de convenio en el mes (carga de trabajo) -----
+    cur.execute(
+        """
+        SELECT COUNT(*) AS cantidad
+        FROM citas
+        WHERE date(fecha_hora) BETWEEN ? AND ?
+          AND modalidad = 'convenio_empresarial';
+        """,
+        (f_desde, f_hasta),
+    )
+    fila_conv = cur.fetchone()
+    cantidad_citas_convenio = int(fila_conv["cantidad"] or 0) if fila_conv else 0
+
+    # ----- Facturas de convenio emitidas en el mes -----
+    cur.execute(
+        """
+        SELECT estado,
+               COUNT(*)             AS cantidad,
+               IFNULL(SUM(total),0) AS total
+        FROM facturas_convenio
+        WHERE date(fecha) BETWEEN ? AND ?
+        GROUP BY estado;
+        """,
+        (f_desde, f_hasta),
+    )
+    filas_facturas = cur.fetchall()
+
+    facturas_por_estado: Dict[str, Dict[str, Any]] = {}
+    total_facturas_emitidas = 0.0
+    total_facturas_pagadas = 0.0
+
+    for fila in filas_facturas:
+        estado = fila["estado"]
+        cantidad = int(fila["cantidad"] or 0)
+        total = float(fila["total"] or 0)
+
+        facturas_por_estado[estado] = {
+            "cantidad": cantidad,
+            "total": total,
+        }
+
+        total_facturas_emitidas += total
+        if estado == "pagada":
+            total_facturas_pagadas += total
+
+    # ----- Gastos del mes -----
+    cur.execute(
+        """
+        SELECT tipo,
+               IFNULL(SUM(monto),0) AS total
+        FROM gastos_financieros
+        WHERE fecha BETWEEN ? AND ?
+        GROUP BY tipo;
+        """,
+        (f_desde, f_hasta),
+    )
+    filas_gastos = cur.fetchall()
+    conn.close()
+
+    gastos_por_tipo: Dict[str, float] = {}
+    total_gastos = 0.0
+
+    for fila in filas_gastos:
+        tipo = fila["tipo"]
+        total = float(fila["total"] or 0)
+        gastos_por_tipo[tipo] = total
+        total_gastos += total
+
+    # ----- Utilidad -----
+    ingresos_brutos = total_particulares + total_facturas_emitidas
+    ingresos_cobrados = total_particulares + total_facturas_pagadas
+    utilidad_neta_cobrada = ingresos_cobrados - total_gastos
+
+    return {
+        "rango": rango,
+        "ingresos": {
+            "citas": {
+                "presencial": citas_presencial,
+                "virtual": citas_virtual,
+                "total_particulares": total_particulares,
+            },
+            "convenios": {
+                "cantidad_citas": cantidad_citas_convenio,
+                "facturas_por_estado": facturas_por_estado,
+                "total_facturas_emitidas": total_facturas_emitidas,
+                "total_facturas_pagadas": total_facturas_pagadas,
+            },
+        },
+        "gastos": {
+            "por_tipo": gastos_por_tipo,
+            "total_gastos": total_gastos,
+        },
+        "utilidad": {
+            "bruta": ingresos_brutos,
+            "cobrada": ingresos_cobrados,
+            "neta_cobrada": utilidad_neta_cobrada,
+        },
+    }
+
+# ===================== PAQUETES DE CONSULTORIO =====================
+
+def crear_paquete_consultorio(datos):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        INSERT INTO paquetes_consultorio (
+            fecha_compra, descripcion, precio_total,
+            cantidad_sesiones, sesiones_restantes, activo
+        )
+        VALUES (?, ?, ?, ?, ?, 1)
+    """, (
+        datos["fecha_compra"],
+        datos.get("descripcion", ""),
+        datos["precio_total"],
+        datos["cantidad_sesiones"],
+        datos["cantidad_sesiones"],  # sesiones restantes iniciales
+    ))
+
+    conn.commit()
+    conn.close()
+
+def obtener_paquete_activo():
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT *
+        FROM paquetes_consultorio
+        WHERE activo = 1
+        ORDER BY id DESC
+        LIMIT 1
+    """)
+
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+def consumir_sesion_paquete(paquete_id, cita_id, fecha):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    # Registrar consumo
+    cur.execute("""
+        INSERT INTO consumo_paquetes (paquete_id, cita_id, fecha)
+        VALUES (?, ?, ?)
+    """, (paquete_id, cita_id, fecha))
+
+    # Restar sesión
+    cur.execute("""
+        UPDATE paquetes_consultorio
+        SET sesiones_restantes = sesiones_restantes - 1
+        WHERE id = ?
+    """, (paquete_id,))
+
+    conn.commit()
+    conn.close()
+
+
+def registrar_paquete_arriendo(datos: dict):
+    """
+    Registra un paquete de arriendo de consultorio.
+    datos = {
+        'fecha_compra': 'YYYY-MM-DD',
+        'cantidad_citas': int,
+        'precio_total': float,
+        'descripcion': str
+    }
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        INSERT INTO paquetes_arriendo (
+            fecha_compra,
+            cantidad_citas,
+            costo_total,
+            notas,
+            citas_usadas
+        )
+        VALUES (?, ?, ?, ?, 0)
+        """,
+        (
+            datos["fecha_compra"],
+            datos["cantidad_citas"],
+            datos["precio_total"],
+            datos.get("descripcion", ""),
+        ),
+    )
+
+    conn.commit()
+    conn.close()
+
+def resumen_paquetes_arriendo() -> Dict[str, Any]:
+    """
+    Devuelve un resumen global de los paquetes de arriendo registrados.
+
+    Retorna un dict con:
+      - total_citas: suma de cantidad_citas
+      - citas_usadas: suma de citas_usadas
+      - citas_disponibles: total_citas - citas_usadas
+      - costo_total: suma de costo_total
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT
+            IFNULL(SUM(cantidad_citas), 0)       AS total_citas,
+            IFNULL(SUM(citas_usadas), 0)         AS citas_usadas,
+            IFNULL(SUM(costo_total), 0)          AS costo_total
+        FROM paquetes_arriendo;
+        """
+    )
+
+    row = cur.fetchone()
+    conn.close()
+
+    total_citas = int(row["total_citas"] or 0)
+    citas_usadas = int(row["citas_usadas"] or 0)
+    costo_total = float(row["costo_total"] or 0.0)
+    citas_disponibles = max(total_citas - citas_usadas, 0)
+
+    return {
+        "total_citas": total_citas,
+        "citas_usadas": citas_usadas,
+        "citas_disponibles": citas_disponibles,
+        "costo_total": costo_total,
+    }
+
 
 
 

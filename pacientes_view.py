@@ -1,4 +1,6 @@
 import re
+import json
+from pathlib import Path
 from datetime import datetime, date
 import flet as ft
 from db import (
@@ -40,8 +42,182 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
 
     # True cuando hay cambios sin guardar en el formulario
     form_dirty = False
+    def marcar_formulario_sucio(e=None):
+        """Marca que el formulario tiene cambios sin guardar."""
+        nonlocal form_dirty
+        form_dirty = True
+
 
     # ------------------------------------------------------------------
+    
+    # ----------------- Países / Indicativos -----------------
+    # Carga desde data/countries.json (ya lo tienes en el proyecto).
+    # Guardamos en BD solo el phoneCode en dígitos (ej: "57", "61").
+    def _flag_emoji(iso2: str) -> str:
+        iso2 = (iso2 or "").strip().upper()
+        if len(iso2) != 2 or not iso2.isalpha():
+            return ""
+        return chr(0x1F1E6 + (ord(iso2[0]) - ord("A"))) + chr(0x1F1E6 + (ord(iso2[1]) - ord("A")))
+
+    def _solo_digitos(s: str) -> str:
+        return "".join(c for c in (s or "") if c.isdigit())
+
+    def _cargar_paises():
+        # Intentamos resolver ../data/countries.json desde este archivo
+        base_dir = Path(__file__).resolve().parents[1]
+        candidates = [
+            base_dir / "data" / "countries.json",
+            Path(__file__).resolve().parent / "data" / "countries.json",
+        ]
+        for fp in candidates:
+            if fp.exists():
+                with open(fp, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                return data
+        return []
+
+    _paises_raw = _cargar_paises()
+    _paises = []
+    _iso2_to_code = {}
+    _code_to_iso2 = {}
+
+    for it in _paises_raw or []:
+        iso2 = (it.get("iso2") or "").upper()
+        name = (it.get("nameES") or it.get("nameEN") or "").strip()
+        code = _solo_digitos(it.get("phoneCode") or "")
+        if not iso2 or not name or not code:
+            continue
+        _iso2_to_code[iso2] = code
+        # Si hay varios países con mismo indicativo, nos quedamos con el primero.
+        _code_to_iso2.setdefault(code, iso2)
+        _paises.append(
+            {
+                "iso2": iso2,
+                "name": name,
+                "code": code,
+                "label": f"{_flag_emoji(iso2)} {name} (+{code})".strip(),
+            }
+        )
+
+    # Colombia primero y default
+    _paises.sort(key=lambda x: (0 if x["iso2"] == "CO" else 1, x["name"].lower()))
+    if "57" in _code_to_iso2:
+        _code_to_iso2["57"] = "CO"
+
+
+        # ----------------- Helpers teléfono (SIN límite de dígitos) -----------------
+    def _solo_digitos(s: str) -> str:
+        return "".join(c for c in (s or "") if c.isdigit())
+
+    def _formatear_espacios(digits: str) -> str:
+        """Formatea una cadena de dígitos con el patrón 3-3-4 repetible por bloques de 10.
+
+        Ej:
+          - 3206798393 -> 320 679 8393
+          - 12312312341231231234 -> 123 123 1234 123 123 1234
+
+        No recorta: si hay más dígitos, sigue repitiendo el patrón.
+        """
+        if not digits:
+            return ""
+
+        partes = []
+        i = 0
+        n = len(digits)
+
+        while i < n:
+            bloque = digits[i:i+10]
+            if len(bloque) <= 3:
+                partes.append(bloque)
+            elif len(bloque) <= 6:
+                partes.append(f"{bloque[:3]} {bloque[3:]}")
+            else:
+                partes.append(f"{bloque[:3]} {bloque[3:6]} {bloque[6:]}")
+            i += 10
+
+        return " ".join(partes)
+
+    # Guards para evitar re-entradas en on_change (update() puede disparar otro evento)
+    _tel_format_guard = {"active": False}
+    _tel_emerg_format_guard = {"active": False}
+
+    def _on_change_telefono(e):
+        # Formatea en tiempo real (solo visual). En BD se guarda sin espacios.
+        if _tel_format_guard["active"]:
+            return
+        _tel_format_guard["active"] = True
+        try:
+            raw = e.control.value or ""
+            digits = _solo_digitos_telefono(raw)
+
+            # Permitir vacío
+            if not digits:
+                if raw != "":
+                    e.control.value = ""
+                    e.control.update()
+                marcar_formulario_sucio()
+                return
+
+            formatted = _formatear_telefono_con_espacios(digits)
+            if raw != formatted:
+                e.control.value = formatted
+                e.control.update()
+
+            marcar_formulario_sucio()
+        finally:
+            _tel_format_guard["active"] = False
+
+    def _on_change_tel_emergencia(e):
+        if _tel_emerg_format_guard["active"]:
+            return
+        _tel_emerg_format_guard["active"] = True
+        try:
+            raw = e.control.value or ""
+            digits = _solo_digitos_telefono(raw)
+
+            if not digits:
+                if raw != "":
+                    e.control.value = ""
+                    e.control.update()
+                marcar_formulario_sucio()
+                return
+
+            formatted = _formatear_telefono_con_espacios(digits)
+            if raw != formatted:
+                e.control.value = formatted
+                e.control.update()
+
+            marcar_formulario_sucio()
+        finally:
+            _tel_emerg_format_guard["active"] = False
+
+    def _on_blur_telefono(e):
+        # En blur re-aplicamos por si hubo edición en medio del texto
+        raw = e.control.value or ""
+        digits = _solo_digitos_telefono(raw)
+        if not digits:
+            e.control.value = ""
+            e.control.update()
+            return
+        formatted = _formatear_telefono_con_espacios(digits)
+        if raw != formatted:
+            e.control.value = formatted
+            e.control.update()
+
+    def _on_blur_tel_emergencia(e):
+        raw = e.control.value or ""
+        digits = _solo_digitos_telefono(raw)
+        if not digits:
+            e.control.value = ""
+            e.control.update()
+            return
+        formatted = _formatear_telefono_con_espacios(digits)
+        if raw != formatted:
+            e.control.value = formatted
+            e.control.update()
+
+
+
     # CONTROLES DEL FORMULARIO DE PACIENTE
     # ------------------------------------------------------------------
 
@@ -137,7 +313,98 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
 
     direccion = ft.TextField(label="Dirección", width=400)
     email = ft.TextField(label="Email", width=300)
-    telefono = ft.TextField(label="Teléfono de contacto", width=200)
+
+    # Selector de país para indicativo (usa countries.json)
+    # Nota: no usamos emoji en Dropdown porque algunos entornos no lo renderizan.
+    # En su lugar mostramos la bandera como imagen (flagcdn) en un selector propio.
+    indicativo_pais = ft.TextField(value="CO", visible=False)
+
+    _paises_por_iso2 = {p["iso2"]: p for p in _paises}
+
+    def _flag_url(iso2: str) -> str:
+        iso2 = (iso2 or "").strip().lower()
+        if len(iso2) != 2:
+            return ""
+        # 40px ancho; puedes subir a w80 si lo quieres más grande
+        return f"https://flagcdn.com/w40/{iso2}.png"
+
+    img_flag_pais = ft.Image(src=_flag_url("CO"), width=18, height=14)
+    txt_pais_sel = ft.Text(_paises_por_iso2.get("CO", {}).get("label", "Colombia (+57)"), no_wrap=True)
+
+    def _actualizar_ui_pais():
+        iso2 = (indicativo_pais.value or "CO").upper()
+        pinfo = _paises_por_iso2.get(iso2) or _paises_por_iso2.get("CO") or {}
+        img_flag_pais.src = _flag_url(pinfo.get("iso2") or "CO")
+        txt_pais_sel.value = pinfo.get("label") or "Colombia (+57)"
+        if img_flag_pais.page is not None:
+            img_flag_pais.update()
+        if txt_pais_sel.page is not None:
+            txt_pais_sel.update()
+
+    # Diálogo de selección de país
+    pais_buscar = ft.TextField(label="Buscar país", width=420)
+    pais_lista = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO, height=420)
+
+    def _aplicar_filtro_pais(q: str):
+        q = (q or "").strip().lower()
+        pais_lista.controls.clear()
+        for pinfo in _paises:
+            label = pinfo.get("label", "")
+            if q and q not in label.lower():
+                continue
+            iso2 = pinfo.get("iso2", "CO")
+            # En _paises normalizamos a: {"iso2","name","code","label"}
+            # Mostramos todo en el title y evitamos un subtitle extra (el "+" suelto).
+            pais_lista.controls.append(
+                ft.ListTile(
+                    leading=ft.Image(src=_flag_url(iso2), width=18, height=14),
+                    title=ft.Text(pinfo.get("label") or label),
+
+                    on_click=lambda e, iso2_sel=iso2: _seleccionar_pais(iso2_sel),
+                )
+            )
+        if pais_lista.page is not None:
+            pais_lista.update()
+
+    def _seleccionar_pais(iso2_sel: str):
+        indicativo_pais.value = (iso2_sel or "CO").upper()
+        _actualizar_ui_pais()
+        dlg_paises.open = False
+        page.update()
+
+    def _abrir_dialogo_paises(e=None):
+        # Colombia primero ya viene así en _paises; solo pintamos lista
+        pais_buscar.value = ""
+        _aplicar_filtro_pais("")
+        page.open(dlg_paises)
+
+    pais_buscar.on_change = lambda e: _aplicar_filtro_pais(pais_buscar.value)
+
+    dlg_paises = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Seleccionar país"),
+        content=ft.Column([pais_buscar, pais_lista], tight=True),
+        actions=[ft.TextButton("Cerrar", on_click=lambda e: (_set_dialog(False)))],
+    )
+
+    def _set_dialog(open_state: bool):
+        dlg_paises.open = open_state
+        page.update()
+
+    # Botón visible para selección de país
+    btn_pais = ft.OutlinedButton(
+        content=ft.Row([img_flag_pais, txt_pais_sel], spacing=8, tight=True),
+        on_click=_abrir_dialogo_paises,
+    )
+
+    telefono = ft.TextField(
+        label="Teléfono de contacto",
+        width=200,
+        keyboard_type=ft.KeyboardType.PHONE,
+        input_filter=ft.InputFilter(allow=True, regex_string=r"[0-9\s]*"),
+        on_change=_on_change_telefono,
+        on_blur=_on_blur_telefono,
+    )
 
     contacto_emergencia_nombre = ft.TextField(
         label="Nombre contacto de emergencia",
@@ -146,6 +413,10 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
     contacto_emergencia_telefono = ft.TextField(
         label="Teléfono contacto de emergencia",
         width=200,
+        keyboard_type=ft.KeyboardType.PHONE,
+        input_filter=ft.InputFilter(allow=True, regex_string=r"[0-9\s]*"),
+        on_change=_on_change_tel_emergencia,
+        on_blur=_on_blur_tel_emergencia,
     )
 
     observaciones = ft.TextField(
@@ -251,15 +522,6 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         tipo_documento.value = "tipo_default"
         sexo.value = "sexo_default"
         estado_civil.value = "estado_default"
-
-    def marcar_formulario_sucio(e=None):
-        """Marca que el formulario tiene cambios sin guardar."""
-        nonlocal form_dirty
-        form_dirty = True
-
-    # ------------------------------------------------------------------
-    # EDICIÓN / ELIMINACIÓN DE ANTECEDENTES
-    # ------------------------------------------------------------------
 
     def abrir_dialogo_editar_antecedente(tipo: str, antecedente: dict):
         """
@@ -429,6 +691,44 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
 
     # ------------------------------------------------------------------
     # FUNCIONES AUXILIARES: FORMULARIO PACIENTE
+
+    def _solo_digitos_telefono(s: str) -> str:
+        """Extrae solo dígitos. Útil para guardar en BD y para WhatsApp."""
+        return "".join(c for c in (s or "") if c.isdigit())
+
+    def _formatear_telefono_con_espacios(s: str) -> str:
+        """Formatea el teléfono con espacios SIN limitar la cantidad de dígitos.
+
+        Regla:
+        - Formato base por bloque de 10 dígitos: 3-3-4  (ej: 320 679 8393)
+        - Si hay más de 10 dígitos, repite el patrón 3-3-4 en el siguiente bloque
+          (ej: 123 123 1234 123 123 1234)
+        - Para el último bloque incompleto, aplica el mejor formato posible:
+            * <=3: tal cual
+            * 4-6: 3 + resto
+            * 7-10: 3-3-resto
+        """
+        digits = _solo_digitos_telefono(s)
+        if not digits:
+            return ""
+
+        partes = []
+        i = 0
+        n = len(digits)
+
+        while i < n:
+            bloque = digits[i : i + 10]
+            if len(bloque) <= 3:
+                partes.append(bloque)
+            elif len(bloque) <= 6:
+                partes.append(f"{bloque[:3]} {bloque[3:]}")
+            else:
+                # 7..10
+                partes.append(f"{bloque[:3]} {bloque[3:6]} {bloque[6:]}")
+            i += 10
+
+        return " ".join(partes)
+
     # ------------------------------------------------------------------
 
     def limpiar_formulario():
@@ -446,6 +746,8 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         eps.value = ""
         direccion.value = ""
         email.value = ""
+        indicativo_pais.value = "CO"
+        _actualizar_ui_pais()
         telefono.value = ""
         contacto_emergencia_nombre.value = ""
         contacto_emergencia_telefono.value = ""
@@ -609,7 +911,7 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
                         ft.DataCell(ft.Text(p["fecha_nacimiento"])),
                         ft.DataCell(ft.Text(calcular_edad_desde_fecha(p["fecha_nacimiento"]))),
                         ft.DataCell(ft.Text(p["sexo"])),
-                        ft.DataCell(ft.Text(p["telefono"])),
+                        ft.DataCell(ft.Text((f"+{(p.get('indicativo_pais') or '57')} {(p.get('telefono') or '')}".strip() if (p.get('telefono') or '').strip() else ""))),
                         ft.DataCell(acciones),
                     ]
                 )
@@ -650,9 +952,12 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         direccion.value = p.get("direccion") or ""
         email.value = p.get("email") or ""
         email.error_text = None
-        telefono.value = p.get("telefono") or ""
+        telefono.value = _formatear_telefono_con_espacios(p.get("telefono") or "")
+        _code = _solo_digitos(p.get("indicativo_pais") or "57")
+        indicativo_pais.value = _code_to_iso2.get(_code, "CO")
+        _actualizar_ui_pais()
         contacto_emergencia_nombre.value = p.get("contacto_emergencia_nombre") or ""
-        contacto_emergencia_telefono.value = p.get("contacto_emergencia_telefono") or ""
+        contacto_emergencia_telefono.value = _formatear_telefono_con_espacios(p.get("contacto_emergencia_telefono") or "")
         observaciones.value = p.get("observaciones") or ""
 
         # Campos de antecedentes se dejan vacíos (sirven para crear nuevos)
@@ -810,9 +1115,10 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
             "eps": eps.value.strip(),
             "direccion": direccion.value.strip(),
             "email": correo,
-            "telefono": telefono.value.strip(),
+            "indicativo_pais": _iso2_to_code.get((indicativo_pais.value or "CO").upper(), "57"),
+            "telefono": _solo_digitos_telefono(telefono.value),
             "contacto_emergencia_nombre": contacto_emergencia_nombre.value.strip(),
-            "contacto_emergencia_telefono": contacto_emergencia_telefono.value.strip(),
+            "contacto_emergencia_telefono": _solo_digitos_telefono(contacto_emergencia_telefono.value),
             "observaciones": observaciones.value.strip(),
         }
 
@@ -1001,9 +1307,7 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
     escolaridad.on_change = marcar_formulario_sucio
     direccion.on_change = marcar_formulario_sucio
     email.on_change = marcar_formulario_sucio
-    telefono.on_change = marcar_formulario_sucio
     contacto_emergencia_nombre.on_change = marcar_formulario_sucio
-    contacto_emergencia_telefono.on_change = marcar_formulario_sucio
     observaciones.on_change = marcar_formulario_sucio
     antecedente_medico_form.on_change = marcar_formulario_sucio
     antecedente_psico_form.on_change = marcar_formulario_sucio
@@ -1165,7 +1469,7 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
                     ft.Row([escolaridad, eps_col], wrap=True),  # o eps_stack o eps_col si luego lo volvíamos a usar
 
                     ft.Row([direccion], wrap=True),
-                    ft.Row([email, telefono], wrap=True),
+                    ft.Row([email, btn_pais, telefono], wrap=True),
                     ft.Row(
                         [contacto_emergencia_nombre, contacto_emergencia_telefono],
                         wrap=True,

@@ -33,7 +33,7 @@ class MarkdownEditor(ft.Column):
         self.hint_text = (
             hint_text
             or "Usa Markdown: **negrita**, _cursiva_, ==resaltado==.\n"
-               "Los botones añaden una plantilla al FINAL del texto y colocan el cursor dentro."
+                "Los botones insertan plantillas en la posición del cursor."
         )
 
         # Campo de texto base
@@ -121,34 +121,42 @@ class MarkdownEditor(ft.Column):
 
     def _insert_snippet(self, tipo: str):
         """
-        Inserta una plantilla de Markdown SIEMPRE al final del texto actual.
-        No intenta usar selección ni posición de cursor, para evitar
-        comportamientos inconsistentes de Flet 0.28.
+        Inserta una plantilla de Markdown en la posición del cursor (si Flet lo permite)
+        o al final del texto como fallback.
         """
-
         if tipo == "bold":
             snippet = "**texto**"
-            cursor_offset = 2  # quedará entre los **
+            cursor_offset = 2  # para quedar entre los **
         elif tipo == "italic":
             snippet = "_texto_"
-            cursor_offset = 1  # quedará entre los _
+            cursor_offset = 1
         elif tipo == "highlight":
             snippet = "==texto=="
-            cursor_offset = 2  # quedará entre los ==
+            cursor_offset = 2
         else:
             return
 
         texto = self.txt.value or ""
 
-        # Siempre insertamos al final
-        pos = len(texto)
-        nuevo_texto = texto + snippet
+        # Intentar usar la posición del cursor si está disponible
+        pos = None
+        try:
+            sel = self.txt.selection
+            if sel is not None and sel.start is not None:
+                pos = sel.start
+        except Exception:
+            pos = None
+
+        if pos is None or pos < 0 or pos > len(texto):
+            pos = len(texto)
+
+        nuevo_texto = texto[:pos] + snippet + texto[pos:]
 
         self.txt.value = nuevo_texto
         self.txt.update()
         self._update_preview()
 
-        # Intentar colocar el cursor dentro del snippet recién añadido
+        # Intentar colocar el cursor dentro de la plantilla
         try:
             nuevo_cursor = pos + cursor_offset
             self.txt.selection = ft.TextSelection(nuevo_cursor, nuevo_cursor)
