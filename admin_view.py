@@ -552,7 +552,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
 
     def on_cambio_tipo(e):
         # Si es convenio, habilitamos "Empresa", si no, la deshabilitamos
-        if dd_srv_tipo.value == "convenio_empresarial":
+        if dd_srv_tipo.value == "convenio":
             dd_srv_empresa.disabled = False
         else:
             dd_srv_empresa.disabled = True
@@ -564,11 +564,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
     dd_srv_tipo = ft.Dropdown(
         label="Tipo",
         width=200,
-        options=[
-            ft.dropdown.Option("presencial"),
-            ft.dropdown.Option("virtual"),
-            ft.dropdown.Option("convenio_empresarial"),
-        ],
+        options=[ft.dropdown.Option('particular','Particular'), ft.dropdown.Option('convenio','Convenio')],
         on_change=on_cambio_tipo,
     )
 
@@ -679,7 +675,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
                 fila = ft.Row(
                     [
                         ft.Text(s["nombre"], width=220),
-                        ft.Text(s["tipo"], width=140),
+                        ft.Text(s.get("modalidad") or s.get("tipo",""), width=140),
                         ft.Text(precio_txt, width=100),
                         ft.Text(s["empresa"] or "", width=180),
                         ft.Row(
@@ -717,10 +713,10 @@ def build_admin_view(page: ft.Page) -> ft.Control:
 
         # Cargar datos en campos
         txt_srv_nombre.value = servicio["nombre"]
-        dd_srv_tipo.value = servicio["tipo"]
+        dd_srv_tipo.value = servicio.get("modalidad") or servicio.get("tipo")
         txt_srv_precio.value = str(int(servicio["precio"]))
 
-        if servicio["tipo"] == "convenio_empresarial":
+        if (servicio.get("modalidad") or servicio.get("tipo")) == "convenio":
             dd_srv_empresa.disabled = False
             dd_srv_empresa.value = servicio["empresa"] or ""
         else:
@@ -748,14 +744,14 @@ def build_admin_view(page: ft.Page) -> ft.Control:
 
     def actualizar_servicio_handler(e, servicio):
         nombre = (txt_srv_nombre.value or "").strip()
-        tipo = dd_srv_tipo.value or "presencial"
+        modalidad = dd_srv_tipo.value or "particular"
         empresa = (dd_srv_empresa.value or "").strip()
 
         if not nombre:
             mostrar_error_servicio("El nombre del servicio es obligatorio.")
             return
 
-        if tipo == "convenio_empresarial" and not empresa:
+        if modalidad == "convenio" and not empresa:
             mostrar_error_servicio(
                 "Debes ingresar el nombre de la empresa del convenio."
             )
@@ -776,9 +772,9 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         actualizar_servicio(
             servicio["id"],
             nombre=nombre,
-            tipo=tipo,
+            modalidad=modalidad,
             precio=precio,
-            empresa=empresa if tipo == "convenio_empresarial" else None,
+            empresa=empresa if modalidad == "convenio" else None,
             activo=activo,
         )
 
@@ -793,7 +789,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
 
     def guardar_nuevo_servicio(e):
         nombre = (txt_srv_nombre.value or "").strip()
-        tipo = dd_srv_tipo.value or "presencial"
+        modalidad = dd_srv_tipo.value or "particular"
         empresa = (dd_srv_empresa.value or "").strip()
 
         # Limpiar error previo
@@ -806,12 +802,12 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             return
 
         # Validar tipo
-        if tipo not in ("presencial", "virtual", "convenio_empresarial"):
-            mostrar_error_servicio("Selecciona un tipo de servicio válido.")
+        if modalidad not in ("particular", "convenio"):
+            mostrar_error_servicio("Selecciona una modalidad de servicio válida.")
             return
 
         # Validar empresa sólo si es convenio
-        if tipo == "convenio_empresarial" and not empresa:
+        if modalidad == "convenio" and not empresa:
             mostrar_error_servicio(
                 "Para convenios empresariales debes indicar la empresa."
             )
@@ -832,7 +828,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
 
         crear_servicio(
             nombre=nombre,
-            tipo=tipo,
+            modalidad=modalidad,
             precio=precio,
             empresa=empresa or None,
         )
@@ -846,7 +842,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
     def abrir_nuevo_servicio(e):
         # Limpiar campos y errores
         txt_srv_nombre.value = ""
-        dd_srv_tipo.value = "presencial"
+        dd_srv_tipo.value = "particular"
         txt_srv_precio.value = ""
         dd_srv_empresa.value = ""
         dd_srv_empresa.disabled = True

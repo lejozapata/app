@@ -8,9 +8,10 @@ from datetime import date, datetime, timedelta
 
 # Precios por modalidad (puedes ajustar estos valores cuando quieras)
 PRECIOS_MODALIDAD: Dict[str, int] = {
-    "virtual": 0,               # TODO: poner valor real, ej. 120000
-    "presencial": 0,           # TODO: valor real
-    "convenio_empresarial": 0, # TODO: valor real
+    # Se mantiene por compatibilidad; hoy el precio real viene de Servicios y se puede
+    # ajustar por cita. Esta tabla solo es un fallback.
+    "particular": 0,
+    "convenio": 0,
 }
 
 # Estados posibles de una cita.
@@ -87,7 +88,8 @@ def init_db() -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             documento_paciente TEXT NOT NULL,
             fecha_hora TEXT NOT NULL,
-            modalidad TEXT CHECK (modalidad IN ('presencial', 'virtual', 'convenio_empresarial')),
+            modalidad TEXT NOT NULL CHECK (modalidad IN ('particular', 'convenio')),
+            canal TEXT NOT NULL CHECK (canal IN ('presencial', 'virtual')),
             motivo TEXT,
             notas TEXT,
             estado TEXT,
@@ -97,8 +99,7 @@ def init_db() -> None:
         );
         """
     )
-
-    # Migraciones seguras para BD ya creadas
+# Migraciones seguras para BD ya creadas
     cur.execute("PRAGMA table_info(citas);")
     columnas_citas = [row[1] for row in cur.fetchall()]
     if "precio" not in columnas_citas:
@@ -171,12 +172,20 @@ def init_db() -> None:
         """
         CREATE TABLE IF NOT EXISTS servicios (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nombre TEXT NOT NULL,                -- Ej: "Consulta psicológica", "Convenio Empresa X"
-            tipo TEXT NOT NULL CHECK (tipo IN ('presencial','virtual','convenio_empresarial')),
+            nombre TEXT NOT NULL,
+            modalidad TEXT NOT NULL CHECK (modalidad IN ('particular','convenio')),
             precio REAL NOT NULL,
-            empresa TEXT,                        -- Solo aplica si es convenio_empresarial (puede ser NULL)
-            activo INTEGER NOT NULL DEFAULT 1    -- 1=activo, 0=inactivo
+            empresa TEXT,
+            activo INTEGER NOT NULL DEFAULT 1
         );
+        """
+    )
+
+    # Evitar duplicados: mismo nombre + modalidad + empresa (cuando aplique)
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_servicios_nombre_modalidad_empresa
+        ON servicios (nombre, modalidad, IFNULL(empresa, ''));
         """
     )
 
@@ -197,6 +206,7 @@ def init_db() -> None:
         );
         """
     )
+
 
     # Tabla de facturas de convenio (encabezado)
     cur.execute(
@@ -836,12 +846,17 @@ def crear_cita(cita: Dict[str, Any]) -> int:
     if "pagado" not in datos:
         datos["pagado"] = 0
 
+    # Compatibilidad: si no viene canal, asumimos presencial
+    if "canal" not in datos or not str(datos.get("canal") or "").strip():
+        datos["canal"] = "presencial"
+
     cur.execute(
         """
         INSERT INTO citas (
             documento_paciente,
             fecha_hora,
             modalidad,
+            canal,
             motivo,
             notas,
             estado,
@@ -851,6 +866,7 @@ def crear_cita(cita: Dict[str, Any]) -> int:
             :documento_paciente,
             :fecha_hora,
             :modalidad,
+            :canal,
             :motivo,
             :notas,
             :estado,
@@ -1372,7 +1388,8 @@ def guardar_horarios_atencion(horarios: list[dict]) -> None:
 # ------------ SERVICIOS / MODALIDADES -------------
 
 
-def listar_servicios() -> list[sqlite3.Row]:
+def listar_servicios() -> List[Dict[str, Any]]:
+    """Devuelve los servicios activos/inactivos como lista de dicts."""
     conn = get_connection()
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
@@ -1387,21 +1404,45 @@ def listar_servicios() -> list[sqlite3.Row]:
 
     filas = cur.fetchall()
     conn.close()
-    return filas
+    return [dict(r) for r in filas]
 
 
-def crear_servicio(nombre: str, tipo: str, precio: float, empresa: str | None = None) -> None:
+def crear_servicio(
+    nombre: str,
+    modalidad: str,
+    precio: float,
+    empresa: str | None = None,
+) -> None:
+    """Crea un servicio.
+
+    - modalidad: 'particular' | 'convenio'
+    - empresa: solo aplica si modalidad='convenio' (si no, se fuerza a None)
+    """
+    nombre = (nombre or "").strip()
+    modalidad = (modalidad or "").strip().lower()
+    empresa = (empresa or "").strip() or None
+
+    if not nombre:
+        raise ValueError("El nombre del servicio es obligatorio.")
+
+    if modalidad not in ("particular", "convenio"):
+        raise ValueError("Modalidad inválida. Usa 'particular' o 'convenio'.")
+
+    if modalidad != "convenio":
+        empresa = None
+    else:
+        if not empresa:
+            raise ValueError("La empresa es obligatoria para servicios de convenio.")
+
     conn = get_connection()
     cur = conn.cursor()
-
     cur.execute(
         """
-        INSERT INTO servicios (nombre, tipo, precio, empresa)
-        VALUES (?, ?, ?, ?);
+        INSERT INTO servicios (nombre, modalidad, precio, empresa, activo)
+        VALUES (?, ?, ?, ?, 1);
         """,
-        (nombre, tipo, precio, empresa),
+        (nombre, modalidad, float(precio), empresa),
     )
-
     conn.commit()
     conn.close()
 
@@ -1409,25 +1450,24 @@ def crear_servicio(nombre: str, tipo: str, precio: float, empresa: str | None = 
 def actualizar_servicio(
     servicio_id: int,
     nombre: str,
-    tipo: str,
+    modalidad: str,
     precio: float,
     empresa: str | None,
     activo: bool,
 ) -> None:
     conn = get_connection()
     cur = conn.cursor()
-
     cur.execute(
         """
         UPDATE servicios
-        SET nombre = ?, tipo = ?, precio = ?, empresa = ?, activo = ?
+        SET nombre = ?, modalidad = ?, precio = ?, empresa = ?, activo = ?
         WHERE id = ?;
         """,
-        (nombre, tipo, precio, empresa, 1 if activo else 0, servicio_id),
+        (nombre, modalidad, precio, empresa, 1 if activo else 0, servicio_id),
     )
-
     conn.commit()
     conn.close()
+
 
 
 def eliminar_servicio(servicio_id: int) -> None:

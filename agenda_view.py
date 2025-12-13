@@ -134,186 +134,215 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         digits = _solo_digitos_whatsapp(tel)
         return bool(digits)
 
+    
+
+    def _actualizar_boton_whatsapp():
+        """WhatsApp solo debe estar disponible cuando se está editando una cita existente
+        y el paciente tiene teléfono válido.
+        """
+        try:
+            cita_id = cita_editando_id.get("value")
+        except Exception:
+            cita_id = None
+
+        pac = reserva.get("paciente") or {}
+        tel = (pac.get("telefono") or "").strip()
+        tiene_tel = bool("".join(c for c in tel if c.isdigit()))
+
+        # Solo visible en edición (cita ya creada) y con teléfono
+        btn_whatsapp_confirmacion.visible = bool(cita_id) and tiene_tel
+        btn_whatsapp_confirmacion.disabled = not btn_whatsapp_confirmacion.visible
+
+        # Evitar re-entradas o errores si aún no está montado
+        try:
+            btn_whatsapp_confirmacion.update()
+        except Exception:
+            pass
+
+
     def enviar_whatsapp_confirmacion(e=None):
-        """Abre WhatsApp con un mensaje de confirmación de la cita actual."""
-        # Locale: mejor esfuerzo (en algunos Windows "Spanish_Spain" falla)
-        try:
-            import locale
+            """Abre WhatsApp con un mensaje de confirmación de la cita actual."""
+            # Locale: mejor esfuerzo (en algunos Windows "Spanish_Spain" falla)
             try:
-                locale.setlocale(locale.LC_TIME, "Spanish_Spain")
+                import locale
+                try:
+                    locale.setlocale(locale.LC_TIME, "Spanish_Spain")
+                except Exception:
+                    # Alternativas comunes
+                    for loc in ("es_ES.UTF-8", "es_ES", "Spanish", "es_CO.UTF-8", "es_CO"):
+                        try:
+                            locale.setlocale(locale.LC_TIME, loc)
+                            break
+                        except Exception:
+                            pass
             except Exception:
-                # Alternativas comunes
-                for loc in ("es_ES.UTF-8", "es_ES", "Spanish", "es_CO.UTF-8", "es_CO"):
-                    try:
-                        locale.setlocale(locale.LC_TIME, loc)
-                        break
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+                pass
 
-        pac = reserva.get("paciente")
-        if not pac:
-            page.snack_bar = ft.SnackBar(
-                content=ft.Text("Primero selecciona un paciente."),
-                bgcolor=ft.Colors.AMBER_300,
-            )
-            page.snack_bar.open = True
-            page.update()
-            return
+            pac = reserva.get("paciente")
+            if not pac:
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text("Primero selecciona un paciente."),
+                    bgcolor=ft.Colors.AMBER_300,
+                )
+                page.snack_bar.open = True
+                page.update()
+                return
 
-        # ------------------ Helpers: indicativo y número WhatsApp ------------------
-        def _solo_digitos(s: str) -> str:
-            return "".join(c for c in (s or "") if c.isdigit())
+            # ------------------ Helpers: indicativo y número WhatsApp ------------------
+            def _solo_digitos(s: str) -> str:
+                return "".join(c for c in (s or "") if c.isdigit())
 
-        def _cargar_iso2_a_code() -> dict:
-            """Carga countries.json (si existe) para resolver ISO2 -> phoneCode."""
-            try:
-                from pathlib import Path
-                import json
-                base_dir = Path(__file__).resolve().parents[1]
-                fp = base_dir / "data" / "countries.json"
-                if not fp.exists():
+            def _cargar_iso2_a_code() -> dict:
+                """Carga countries.json (si existe) para resolver ISO2 -> phoneCode."""
+                try:
+                    from pathlib import Path
+                    import json
+                    base_dir = Path(__file__).resolve().parents[1]
+                    fp = base_dir / "data" / "countries.json"
+                    if not fp.exists():
+                        return {}
+                    data = json.loads(fp.read_text(encoding="utf-8"))
+                    m = {}
+                    for it in data or []:
+                        iso2 = (it.get("iso2") or "").strip().upper()
+                        code = _solo_digitos(it.get("phoneCode") or "")
+                        if iso2 and code:
+                            m[iso2] = code
+                    return m
+                except Exception:
                     return {}
-                data = json.loads(fp.read_text(encoding="utf-8"))
-                m = {}
-                for it in data or []:
-                    iso2 = (it.get("iso2") or "").strip().upper()
-                    code = _solo_digitos(it.get("phoneCode") or "")
-                    if iso2 and code:
-                        m[iso2] = code
-                return m
-            except Exception:
-                return {}
 
-        _ISO2_TO_CODE = _cargar_iso2_a_code()
+            _ISO2_TO_CODE = _cargar_iso2_a_code()
 
-        def _resolver_indicativo(pac: dict) -> str:
-            """Devuelve indicativo en dígitos. Acepta que en BD venga '57' o 'CO'."""
-            raw = (pac.get("indicativo_pais") or "").strip()
-            if not raw:
-                return "57"
+            def _resolver_indicativo(pac: dict) -> str:
+                """Devuelve indicativo en dígitos. Acepta que en BD venga '57' o 'CO'."""
+                raw = (pac.get("indicativo_pais") or "").strip()
+                if not raw:
+                    return "57"
 
-            # Si viene ISO2 (CO, US, etc.)
-            if len(raw) == 2 and raw.isalpha():
-                return _ISO2_TO_CODE.get(raw.upper(), "57")
+                # Si viene ISO2 (CO, US, etc.)
+                if len(raw) == 2 and raw.isalpha():
+                    return _ISO2_TO_CODE.get(raw.upper(), "57")
 
-            # Si viene como +57 o 57
-            digits = _solo_digitos(raw)
-            return digits or "57"
+                # Si viene como +57 o 57
+                digits = _solo_digitos(raw)
+                return digits or "57"
 
-        def construir_numero_whatsapp(pac: dict) -> str | None:
-            tel_raw = (pac.get("telefono") or "").strip()
-            if not tel_raw:
-                return None
+            def construir_numero_whatsapp(pac: dict) -> str | None:
+                tel_raw = (pac.get("telefono") or "").strip()
+                if not tel_raw:
+                    return None
 
-            # Si el teléfono ya viene en formato internacional con "+"
-            if tel_raw.startswith("+"):
+                # Si el teléfono ya viene en formato internacional con "+"
+                if tel_raw.startswith("+"):
+                    digits = _solo_digitos(tel_raw)
+                    return digits or None
+
                 digits = _solo_digitos(tel_raw)
-                return digits or None
+                if not digits:
+                    return None
 
-            digits = _solo_digitos(tel_raw)
-            if not digits:
-                return None
+                ind = _resolver_indicativo(pac)
 
-            ind = _resolver_indicativo(pac)
+                # Si el usuario pegó todo junto sin "+" (ej: 57320...)
+                if ind and digits.startswith(ind):
+                    return digits
 
-            # Si el usuario pegó todo junto sin "+" (ej: 57320...)
-            if ind and digits.startswith(ind):
-                return digits
+                return (ind + digits) if ind else digits
 
-            return (ind + digits) if ind else digits
+            wa_num = construir_numero_whatsapp(pac)
+            if not wa_num:
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text("El paciente no tiene un teléfono válido registrado."),
+                    bgcolor=ft.Colors.AMBER_300,
+                )
+                page.snack_bar.open = True
+                page.update()
+                return
 
-        wa_num = construir_numero_whatsapp(pac)
-        if not wa_num:
-            page.snack_bar = ft.SnackBar(
-                content=ft.Text("El paciente no tiene un teléfono válido registrado."),
-                bgcolor=ft.Colors.AMBER_300,
-            )
-            page.snack_bar.open = True
-            page.update()
-            return
+            # -------- Datos de fecha / hora --------
+            fecha_obj = reserva.get("fecha")
+            try:
+                fecha_str = fecha_obj.strftime("%A %d de %B de %Y")
+                fecha_str = fecha_str.capitalize()
+            except Exception:
+                fecha_str = "la fecha acordada"
 
-        # -------- Datos de fecha / hora --------
-        fecha_obj = reserva.get("fecha")
-        try:
-            fecha_str = fecha_obj.strftime("%A %d de %B de %Y")
-            fecha_str = fecha_str.capitalize()
-        except Exception:
-            fecha_str = "la fecha acordada"
+            # Hora en formato 12h (ej: 2:00 p. m.)
+            try:
+                h = int(dd_hora.value)
+                m = int(dd_min.value)
+                h12 = h if 1 <= h <= 12 else (12 if h == 0 else h - 12)
+                sufijo = "a. m." if h < 12 else "p. m."
+                hora_hum = f"{h12}:{m:02d} {sufijo}"
+            except Exception:
+                hora_hum = f"{dd_hora.value}:{dd_min.value}"
 
-        # Hora en formato 12h (ej: 2:00 p. m.)
-        try:
-            h = int(dd_hora.value)
-            m = int(dd_min.value)
-            h12 = h if 1 <= h <= 12 else (12 if h == 0 else h - 12)
-            sufijo = "a. m." if h < 12 else "p. m."
-            hora_hum = f"{h12}:{m:02d} {sufijo}"
-        except Exception:
-            hora_hum = f"{dd_hora.value}:{dd_min.value}"
+            # -------- Servicio / modalidad / valor --------
+            srv = reserva.get("servicio") or {}
+            nombre_servicio = (srv.get("nombre") or "").strip()
 
-        # -------- Servicio / modalidad / valor --------
-        srv = reserva.get("servicio") or {}
-        nombre_servicio = (srv.get("nombre") or "").strip()
+            # Compatibilidad: modelo viejo (tipo=presencial/virtual/convenio_empresarial)
+            tipo_raw = (srv.get("tipo") or "").strip()
+            tipo_map = {
+                "presencial": "Presencial",
+                "virtual": "Virtual",
+                "convenio_empresarial": "Convenio empresarial",
+            }
 
-        # Compatibilidad: modelo viejo (tipo=presencial/virtual/convenio_empresarial)
-        tipo_raw = (srv.get("tipo") or "").strip()
-        tipo_map = {
-            "presencial": "Presencial",
-            "virtual": "Virtual",
-            "convenio_empresarial": "Convenio empresarial",
-        }
+            # Modelo nuevo (modalidad=particular|convenio) y canal se guarda en la CITA
+            mod_raw = (srv.get("modalidad") or "").strip()
+            canal_raw = (reserva.get("canal") or "").strip()
+            mod_map = {"particular": "Particular", "convenio": "Convenio"}
+            canal_map = {"presencial": "Presencial", "virtual": "Virtual"}
 
-        # Modelo nuevo (modalidad=particular|convenio, canal=presencial|virtual)
-        mod_raw = (srv.get("modalidad") or "").strip()
-        canal_raw = (srv.get("canal") or "").strip()
-        mod_map = {"particular": "Particular", "convenio": "Convenio"}
-        canal_map = {"presencial": "Presencial", "virtual": "Virtual"}
+            if mod_raw in mod_map and canal_raw in canal_map:
+                modalidad = f"{mod_map[mod_raw]} / {canal_map[canal_raw]}"
+            else:
+                modalidad = tipo_map.get(tipo_raw, tipo_raw or "Sin especificar")
 
-        if mod_raw in mod_map and canal_raw in canal_map:
-            modalidad = f"{mod_map[mod_raw]} / {canal_map[canal_raw]}"
-        else:
-            modalidad = tipo_map.get(tipo_raw, tipo_raw or "Sin especificar")
+            # Valor (precio)
+            valor_str = ""
+            try:
+                valor_num = float((txt_precio.value or "").replace(".", "").replace(",", "."))
+                valor_str = f"{valor_num:,.0f}".replace(",", ".")
+            except Exception:
+                pass
 
-        # Valor (precio)
-        valor_str = ""
-        try:
-            valor_num = float((txt_precio.value or "").replace(".", "").replace(",", "."))
-            valor_str = f"{valor_num:,.0f}".replace(",", ".")
-        except Exception:
-            pass
+            direccion = cfg.get("direccion") or ""
 
-        direccion = cfg.get("direccion") or ""
+            # -------- Mensaje de WhatsApp --------
+            nombre_paciente = (pac.get("nombre_completo") or "").strip()
 
-        # -------- Mensaje de WhatsApp --------
-        nombre_paciente = (pac.get("nombre_completo") or "").strip()
+            canal = canal_raw
+            canal_txt = "Presencial" if canal == "presencial" else "Virtual"
 
-        msg_lines = [
-            f"• Hola *{nombre_paciente}*,",
-            "",
-            "• *Cita confirmada*",
-            f"• *Fecha:* {fecha_str}",
-            f"• *Hora:* {hora_hum}",
-            f"• *Modalidad:* {modalidad}",
-        ]
+            msg_lines = [
+                f"• Hola *{nombre_paciente}*,",
+                "",
+                "• *Cita confirmada*",
+                f"• *Fecha:* {fecha_str}",
+                f"• *Hora:* {hora_hum}",
+                f"• *Modalidad:* {canal_txt}",
+            ]
 
-        if nombre_servicio:
-            msg_lines.append(f"• *Servicio:* {nombre_servicio}")
+            if nombre_servicio:
+                msg_lines.append(f"• *Servicio:* {nombre_servicio}")
 
-        if valor_str:
-            msg_lines.append(f"• *Valor:* ${valor_str}")
+            if valor_str:
+                msg_lines.append(f"• *Valor:* ${valor_str}")
 
-        # Si es presencial, incluir dirección (modelo viejo o nuevo)
-        es_presencial = (tipo_raw == "presencial") or (canal_raw == "presencial")
-        if es_presencial and direccion:
-            msg_lines.append(f"• *Dirección:* {direccion}")
+            # Si es presencial, incluir dirección (modelo viejo o nuevo)
+            es_presencial = (tipo_raw == "presencial") or (canal_raw == "presencial")
+            if es_presencial and direccion:
+                msg_lines.append(f"• *Dirección:* {direccion}")
 
-        msg_lines.append("")
-        msg_lines.append("Si necesitas reagendar o cancelar, por favor respóndeme por este medio.")
+            msg_lines.append("")
+            msg_lines.append("Si necesitas reagendar o cancelar, por favor respóndeme por este medio.")
 
-        msg = "\n".join(msg_lines)
-        url = f"https://wa.me/{wa_num}?text={urllib.parse.quote(msg)}"
-        page.launch_url(url)
+            msg = "\n".join(msg_lines)
+            url = f"https://wa.me/{wa_num}?text={urllib.parse.quote(msg)}"
+            page.launch_url(url)
 
 
 
@@ -512,8 +541,23 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         label="Servicio",
         width=320,
         options=[
-            ft.dropdown.Option(str(s["id"]), f"{s['nombre']} ({s['tipo']})")
+            ft.dropdown.Option(
+                str(s["id"]),
+                f"{s['nombre']} ({(s.get('modalidad') or s.get('tipo') or '').capitalize()})",
+            )
             for s in servicios
+        ],
+    )
+
+
+    dd_canal = ft.Dropdown(
+        label="Canal",
+        width=180,
+        value="presencial",
+        disabled=True,
+        options=[
+            ft.dropdown.Option("presencial", "Presencial"),
+            ft.dropdown.Option("virtual", "Virtual"),
         ],
     )
 
@@ -631,6 +675,8 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
         titulo_reserva.value = f"Reserva de {pac['nombre_completo']}"
 
+        _actualizar_boton_whatsapp()
+
          # Mostrar / ocultar el checkbox de correo según si el paciente tiene email
         email = (pac.get("email") or "").strip()
         if email:
@@ -648,27 +694,13 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             txt_buscar_paciente.update()
             titulo_reserva.update()
             chk_notificar_email.update()
-
-    
-        # Mostrar / ocultar el botón de WhatsApp según si el paciente tiene teléfono
-        if _paciente_tiene_whatsapp(pac):
-            btn_whatsapp_confirmacion.visible = True
-            btn_whatsapp_confirmacion.disabled = False
-        else:
-            btn_whatsapp_confirmacion.visible = False
-            btn_whatsapp_confirmacion.disabled = True
-        if btn_whatsapp_confirmacion.page is not None:
-            btn_whatsapp_confirmacion.update()
+        _actualizar_boton_whatsapp()
 
     def quitar_paciente():
         reserva["paciente"] = None
         ficha_paciente.visible = False
         ficha_paciente.controls.clear()
-
-        btn_whatsapp_confirmacion.disabled = True
-        btn_whatsapp_confirmacion.visible = False
-        if btn_whatsapp_confirmacion.page is not None:
-            btn_whatsapp_confirmacion.update()
+        _actualizar_boton_whatsapp()
 
         titulo_reserva.value = "Nueva reserva"
 
@@ -690,10 +722,14 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         if not sid:
             txt_empresa_convenio.value = ""
             txt_empresa_convenio.visible = False
+            dd_canal.disabled = True
+            reserva["canal"] = None
             if txt_precio.page is not None:
                 txt_precio.update()
             if txt_empresa_convenio.page is not None:
                 txt_empresa_convenio.update()
+            if dd_canal.page is not None:
+                dd_canal.update()
             return
 
         srv = next((s for s in servicios if s["id"] == int(sid)), None)
@@ -707,25 +743,43 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             return
 
         reserva["servicio"] = srv
+        dd_canal.disabled = False
 
         try:
             txt_precio.value = str(int(srv["precio"]))
         except Exception:
             txt_precio.value = str(srv["precio"])
 
-        if srv["tipo"] == "convenio_empresarial":
+        # Mostrar empresa solo si el servicio es de modalidad Convenio
+        mod_srv = (srv.get("modalidad") or srv.get("tipo") or "").strip()
+        es_convenio = mod_srv in ("convenio", "convenio_empresarial")
+
+        if es_convenio:
             txt_empresa_convenio.value = srv.get("empresa") or ""
             txt_empresa_convenio.visible = True
         else:
             txt_empresa_convenio.value = ""
             txt_empresa_convenio.visible = False
 
+        # Canal siempre se escoge en agenda (por defecto: presencial)
+        if not dd_canal.value:
+            dd_canal.value = "presencial"
+        reserva["canal"] = dd_canal.value
+
         if txt_precio.page is not None:
             txt_precio.update()
         if txt_empresa_convenio.page is not None:
             txt_empresa_convenio.update()
 
+        if dd_canal.page is not None:
+            dd_canal.update()
+
     dd_servicios.on_change = seleccionar_servicio
+
+    def seleccionar_canal(e=None):
+        reserva["canal"] = dd_canal.value
+
+    dd_canal.on_change = seleccionar_canal
 
     # ----------------- GUARDAR (CREAR / EDITAR) -------------------
 
@@ -770,7 +824,30 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         hora_fin_str = f"{dd_hora_fin.value}:{dd_min_fin.value}"
 
         srv = reserva["servicio"]
-        modalidad = srv["tipo"]  # presencial / virtual / convenio_empresarial
+        # Modalidad para BD: particular | convenio
+        # Canal para BD: presencial | virtual
+        tipo_raw = (srv.get("tipo") or "").strip()
+        mod_raw = (srv.get("modalidad") or "").strip()
+
+        if mod_raw:
+            modalidad = mod_raw
+            canal = (dd_canal.value or reserva.get("canal") or "presencial").strip()
+        else:
+            # Compatibilidad con modelo viejo donde tipo representaba el canal
+            if tipo_raw in ("presencial", "virtual"):
+                modalidad = "particular"
+                canal = tipo_raw
+                # Sincronizar dropdown para que refleje el canal real
+                dd_canal.value = canal
+            elif tipo_raw == "convenio_empresarial":
+                modalidad = "convenio"
+                canal = (dd_canal.value or reserva.get("canal") or "presencial").strip()
+            else:
+                modalidad = "particular"
+                canal = (dd_canal.value or reserva.get("canal") or "presencial").strip()
+
+        reserva["canal"] = canal
+
 
         estado = dd_estado.get_value()
         pagado_flag = 1 if chk_pagado.value else 0
@@ -782,6 +859,7 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             "documento_paciente": reserva["paciente"]["documento"],
             "fecha_hora": f"{fecha_str} {hora_inicio_str}",
             "modalidad": modalidad,
+            "canal": canal,
             "motivo": motivo,
             "notas": notas,
             "estado": estado,
@@ -879,6 +957,7 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             ficha_paciente,
             ft.Divider(),
             dd_servicios,
+            dd_canal,
             txt_empresa_convenio,
             txt_precio,
             txt_notas,
@@ -1276,6 +1355,8 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
     #     cita_editando_id["value"] = None
 
+# _actualizar_boton_whatsapp()
+
     #     reserva["fecha"] = dia
     #     reserva["hora_inicio"] = (h, mm)
     #     reserva["hora_fin"] = (h + 1, mm)
@@ -1417,6 +1498,9 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
         reserva["servicio"] = None
         dd_servicios.value = None
+        reserva["canal"] = None
+        dd_canal.value = "presencial"
+        dd_canal.disabled = True
         txt_precio.value = ""
         txt_notas.value = ""
         txt_empresa_convenio.value = ""
@@ -1431,12 +1515,24 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         chk_notificar_email.value = False
 
         btn_whatsapp_confirmacion.visible = False
-        btn_whatsapp_confirmacion.disabled = True
-        if btn_whatsapp_confirmacion.page is not None:
-            btn_whatsapp_confirmacion.update()
+        btn_facturar_convenio.visible = False
+        btn_facturar_convenio.disabled = True
+        try:
+            btn_facturar_convenio.update()
+        except Exception:
+            pass
+        _actualizar_boton_whatsapp()
 
     def abrir_reserva_nueva_desde_slot(dia: date, minuto: int):
         preparar_reserva_para_slot(dia, minuto)
+
+        # En nueva reserva NO se debe mostrar el botón de facturar convenio
+        btn_facturar_convenio.visible = False
+        btn_facturar_convenio.disabled = True
+        try:
+            btn_facturar_convenio.update()
+        except Exception:
+            pass
         # aseguramos estado normal del diálogo de reserva
         restaurar_dialogo_reserva()
         page.dialog = dialogo_reserva
@@ -1483,9 +1579,24 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
     def facturar_convenio_desde_reserva(e=None):
         """Prepara la información de la cita de convenio y navega a la vista de facturación."""
         srv = reserva.get("servicio") or {}
-        if srv.get("tipo") != "convenio_empresarial":
+
+        # Solo se puede facturar un convenio cuando la cita YA existe (modo edición)
+        cita_id = cita_editando_id.get("value") if isinstance(cita_editando_id, dict) else None
+        if not cita_id:
             page.snack_bar = ft.SnackBar(
-                content=ft.Text("Solo las reservas de tipo convenio empresarial pueden facturarse como convenio."),
+                content=ft.Text("Primero guarda la cita antes de facturar el convenio."),
+                bgcolor=ft.Colors.AMBER_300,
+            )
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        mod = (srv.get("modalidad") or "").strip()
+        tipo = (srv.get("tipo") or "").strip()
+        es_convenio = (mod == "convenio") or (tipo == "convenio_empresarial")
+        if not es_convenio:
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text("Solo las reservas de tipo convenio pueden facturarse como convenio."),
                 bgcolor=ft.Colors.RED_300,
             )
             page.snack_bar.open = True
@@ -1619,9 +1730,7 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             btn_whatsapp_confirmacion.disabled = False
         else:
             btn_whatsapp_confirmacion.visible = False
-            btn_whatsapp_confirmacion.disabled = True
-        if btn_whatsapp_confirmacion.page is not None:
-            btn_whatsapp_confirmacion.update()
+        _actualizar_boton_whatsapp()
 
         # En edición: si tiene email, mostramos el checkbox pero desmarcado
         email = (pac.get("email") or "").strip()
@@ -1643,12 +1752,24 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
                 reserva["servicio"] = s
                 break
 
+        # Canal desde la cita (nuevo) o derivado del modelo viejo
+        canal_db = (cita_row.get("canal") or "").strip()
+        if not canal_db:
+            mod_db = (cita_row.get("modalidad") or "").strip()
+            if mod_db in ("presencial", "virtual"):
+                canal_db = mod_db
+        if canal_db in ("presencial", "virtual"):
+            dd_canal.value = canal_db
+        else:
+            dd_canal.value = "presencial"
+
         # Actualizar precio y empresa según el servicio
         seleccionar_servicio(None)
 
         # Mostrar u ocultar botón de facturar convenio según el tipo de servicio
         srv_sel = reserva.get("servicio") or {}
-        if srv_sel.get("tipo") == "convenio_empresarial":
+        mod_sel = (srv_sel.get("modalidad") or srv_sel.get("tipo") or "").strip()
+        if mod_sel in ("convenio", "convenio_empresarial"):
             btn_facturar_convenio.visible = True
         else:
             btn_facturar_convenio.visible = False
@@ -1684,6 +1805,8 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         mensaje_error.visible = False
 
         titulo_reserva.value = f"Reserva de {pac['nombre_completo']}"
+
+        _actualizar_boton_whatsapp()
 
         # Aseguramos que el diálogo esté en modo "edición normal"
         restaurar_dialogo_reserva()
