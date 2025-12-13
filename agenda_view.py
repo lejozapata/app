@@ -1766,13 +1766,16 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         # Actualizar precio y empresa según el servicio
         seleccionar_servicio(None)
 
-        # Mostrar u ocultar botón de facturar convenio según el tipo de servicio
+        # Mostrar / habilitar botón de facturar convenio según el tipo de servicio
         srv_sel = reserva.get("servicio") or {}
         mod_sel = (srv_sel.get("modalidad") or srv_sel.get("tipo") or "").strip()
-        if mod_sel in ("convenio", "convenio_empresarial"):
-            btn_facturar_convenio.visible = True
-        else:
-            btn_facturar_convenio.visible = False
+
+        es_convenio = mod_sel in ("convenio", "convenio_empresarial")
+        tiene_cita = bool(reserva.get("cita_id") or cita_editando_id.get("value"))
+
+        btn_facturar_convenio.visible = bool(es_convenio)
+        btn_facturar_convenio.disabled = not (es_convenio and tiene_cita)
+
         if btn_facturar_convenio.page is not None:
             btn_facturar_convenio.update()
 
