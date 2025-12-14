@@ -22,7 +22,28 @@ MESES_ES = [
 SMTP_HOST = os.getenv("SARA_SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SARA_SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SARA_SMTP_USER")           # ej: "tu_correo@gmail.com"
-SMTP_PASSWORD = os.getenv("SARA_SMTP_PASSWORD")   # app-password, etc.
+SMTP_PASSWORD = os.getenv("SARA_SMTP_PASSWORD")   
+
+# Preferimos configuración guardada en BD (UI) y dejamos variables de entorno como fallback.
+def _cargar_credenciales_gmail() -> tuple[str | None, str | None]:
+    """
+    Retorna (user, app_password) usando:
+      1) configuracion_gmail en SQLite (si está habilitado y completo)
+      2) variables de entorno SARA_SMTP_USER / SARA_SMTP_PASSWORD
+    """
+    try:
+        from db import obtener_configuracion_gmail  # import local para evitar ciclos
+        cfg = obtener_configuracion_gmail()
+        if cfg.get("habilitado") and cfg.get("gmail_user") and cfg.get("gmail_app_password"):
+            from crypto_utils import decrypt_str
+            return (str(cfg.get("gmail_user")), decrypt_str(str(cfg.get("gmail_app_password"))))
+    except Exception:
+        # Si la BD no está disponible por algún motivo, caemos a env vars.
+        pass
+
+    return (SMTP_USER, SMTP_PASSWORD)
+
+# app-password, etc.
 
 
 class ConfigSMTPIncompleta(Exception):
@@ -62,7 +83,9 @@ def enviar_correo_cita(
         # Nada que enviar
         return
 
-    if not (SMTP_HOST and SMTP_USER and SMTP_PASSWORD):
+    smtp_user, smtp_password = _cargar_credenciales_gmail()
+
+    if not (SMTP_HOST and smtp_user and smtp_password):
         raise ConfigSMTPIncompleta(
             "Faltan SARA_SMTP_HOST / SARA_SMTP_USER / SARA_SMTP_PASSWORD"
         )
@@ -92,7 +115,7 @@ def enviar_correo_cita(
     dt_fin = datetime.strptime(f"{fecha_solo} {hora_fin_str}", "%Y-%m-%d %H:%M")
 
     nombre_prof = cfg_profesional.get("nombre_profesional") or "Tu profesional"
-    email_prof = (cfg_profesional.get("email") or SMTP_USER or "").strip()
+    email_prof = (cfg_profesional.get("email") or smtp_user or "").strip()
     direccion = cfg_profesional.get("direccion") or ""
     telefono_prof = cfg_profesional.get("telefono") or ""
     # "Modalidad" en el correo debe reflejar el CANAL (presencial/virtual)
@@ -271,7 +294,7 @@ END:VCALENDAR
 
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = f"{nombre_prof} <{email_prof or SMTP_USER}>"
+    msg["From"] = f"{nombre_prof} <{email_prof or smtp_user}>"
     msg["To"] = email_paciente
 
     msg.set_content(body_text)
@@ -286,7 +309,7 @@ END:VCALENDAR
 
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
         smtp.starttls()
-        smtp.login(SMTP_USER, SMTP_PASSWORD)
+        smtp.login(smtp_user, smtp_password)
         smtp.send_message(msg)
 
 
@@ -307,7 +330,9 @@ def enviar_correo_cancelacion(
     if not email_paciente:
         return
 
-    if not (SMTP_HOST and SMTP_USER and SMTP_PASSWORD):
+    smtp_user, smtp_password = _cargar_credenciales_gmail()
+
+    if not (SMTP_HOST and smtp_user and smtp_password):
         raise ConfigSMTPIncompleta(
             "Faltan SARA_SMTP_HOST / SARA_SMTP_USER / SARA_SMTP_PASSWORD"
         )
@@ -319,7 +344,7 @@ def enviar_correo_cancelacion(
     hora_inicio_humano = dt_inicio.strftime("%I:%M %p").lstrip("0")
 
     nombre_prof = cfg_profesional.get("nombre_profesional") or "Tu profesional"
-    email_prof = (cfg_profesional.get("email") or SMTP_USER or "").strip()
+    email_prof = (cfg_profesional.get("email") or smtp_user or "").strip()
 
     # "Modalidad" en el correo debe reflejar el CANAL (presencial/virtual)
     canal_raw = (datos_cita.get("canal") or "").strip()
@@ -409,7 +434,7 @@ def enviar_correo_cancelacion(
 
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = f"{nombre_prof} <{email_prof or SMTP_USER}>"
+    msg["From"] = f"{nombre_prof} <{email_prof or smtp_user}>"
     msg["To"] = email_paciente
 
     msg.set_content(body_text)
@@ -417,6 +442,6 @@ def enviar_correo_cancelacion(
 
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
         smtp.starttls()
-        smtp.login(SMTP_USER, SMTP_PASSWORD)
+        smtp.login(smtp_user, smtp_password)
         smtp.send_message(msg)
 

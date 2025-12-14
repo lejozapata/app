@@ -215,7 +215,7 @@ def build_finanzas_view(page: ft.Page) -> ft.Control:
         value="arriendo_consultorio",
         width=200,
         options=[
-            ft.dropdown.Option("gasolina", "Gasolina"),
+            ft.dropdown.Option("carro", "Carro"),
             ft.dropdown.Option("hogar", "Hogar"),
             ft.dropdown.Option("ocio", "Ocio/Hobbies"),
             ft.dropdown.Option("otro", "Otro gasto"),

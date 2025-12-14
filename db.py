@@ -167,7 +167,21 @@ def init_db() -> None:
         """
     )
 
-        # Tabla de servicios / modalidades de cita
+        
+
+    # Tabla de configuración de GMAIL (siempre un solo registro id=1)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS configuracion_gmail (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            gmail_user TEXT,
+            gmail_app_password TEXT,
+            habilitado INTEGER NOT NULL DEFAULT 0
+        );
+        """
+    )
+
+# Tabla de servicios / modalidades de cita
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS servicios (
@@ -2612,6 +2626,100 @@ def guardar_configuracion_facturacion(cfg: dict) -> None:
 
     conn.commit()
     conn.close()
+
+
+# ------------ CONFIGURACIÓN GMAIL -------------
+
+def obtener_configuracion_gmail() -> dict:
+    """
+    Devuelve la configuración de Gmail para envío de correos.
+    Si no existe el registro id=1, lo crea con valores por defecto.
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute("SELECT * FROM configuracion_gmail WHERE id = 1;")
+    row = cur.fetchone()
+
+    if row is None:
+        cur.execute(
+            """
+            INSERT INTO configuracion_gmail (id, gmail_user, gmail_app_password, habilitado)
+            VALUES (1, NULL, NULL, 0);
+            """
+        )
+        conn.commit()
+        cur.execute("SELECT * FROM configuracion_gmail WHERE id = 1;")
+        row = cur.fetchone()
+
+    cfg = {
+        "gmail_user": row["gmail_user"],
+        "gmail_app_password": row["gmail_app_password"],  # OJO: cifrado (enc::...) o plano legacy
+        "habilitado": bool(row["habilitado"]),
+        "tiene_password": bool(row["gmail_app_password"]),
+    }
+
+    conn.close()
+    return cfg
+
+
+def guardar_configuracion_gmail(cfg: dict) -> None:
+    """
+    Guarda la configuración de Gmail (siempre id=1).
+    - gmail_user: correo gmail
+    - gmail_app_password: clave de aplicación (se guarda cifrada).
+      Si viene vacío/None, se conserva la clave existente.
+    - habilitado: bool (si no viene, se habilita solo si hay user+password)
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute("SELECT * FROM configuracion_gmail WHERE id = 1;")
+    actual = cur.fetchone()
+
+    gmail_user = (cfg.get("gmail_user") or "").strip() or None
+    new_password = (cfg.get("gmail_app_password") or "").strip() or None
+
+    # Si el usuario no escribió una nueva, preservamos la existente
+    if not new_password and actual is not None:
+        new_password = actual["gmail_app_password"]
+
+    # Cifrar si es nueva y aún no está cifrada
+    if new_password and not str(new_password).startswith("enc::"):
+        from crypto_utils import encrypt_str
+        new_password = encrypt_str(str(new_password))
+
+    habilitado = cfg.get("habilitado")
+    if habilitado is None:
+        habilitado = 1 if (gmail_user and new_password) else 0
+    else:
+        habilitado = 1 if bool(habilitado) else 0
+
+    if actual is None:
+        cur.execute(
+            """
+            INSERT INTO configuracion_gmail (id, gmail_user, gmail_app_password, habilitado)
+            VALUES (1, ?, ?, ?);
+            """,
+            (gmail_user, new_password, habilitado),
+        )
+    else:
+        cur.execute(
+            """
+            UPDATE configuracion_gmail
+            SET gmail_user = ?,
+                gmail_app_password = ?,
+                habilitado = ?
+            WHERE id = 1;
+            """,
+            (gmail_user, new_password, habilitado),
+        )
+
+    conn.commit()
+    conn.close()
+
 
 
 

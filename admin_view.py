@@ -16,6 +16,8 @@ from db import (
     obtener_configuracion_facturacion,
     guardar_configuracion_facturacion,
     listar_empresas_convenio,
+    obtener_configuracion_gmail,
+    guardar_configuracion_gmail,
 )
 
 BANCOS_CO = [
@@ -108,6 +110,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
     cfg = obtener_configuracion_profesional()
     horarios = obtener_horarios_atencion()
     cfg_fact = obtener_configuracion_facturacion()
+    cfg_gmail = obtener_configuracion_gmail()
 
     seccion_activa = {"value": "profesional"}  # "profesional" | "servicios"
 
@@ -167,6 +170,35 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         value=cfg.get("email") or "",
         width=300,
     )
+
+
+    # -------- Envío de correos (Gmail) --------
+
+    txt_gmail_user = ft.TextField(
+        label="Correo Gmail para enviar notificaciones",
+        value=(cfg_gmail.get("gmail_user") or ""),
+        width=350,
+        helper_text="Debe ser una cuenta Gmail con clave de aplicación (App Password).",
+    )
+
+    txt_gmail_app_password = ft.TextField(
+        label="Clave de aplicación de Gmail",
+        value="",  # No precargamos el secreto por seguridad
+        width=350,
+        password=True,
+        can_reveal_password=False,
+        helper_text=(
+            "Ya hay una clave guardada. Deja este campo en blanco para conservarla."
+            if cfg_gmail.get("tiene_password") else
+            "En Gmail: Seguridad -> Contraseñas de aplicaciones."
+        ),
+    )
+
+    sw_habilitar_email = ft.Switch(
+        label="Habilitar envío de correos (Gmail)",
+        value=bool(cfg_gmail.get("habilitado")),
+    )
+
 
     # -------- Información complementaria para facturación --------
 
@@ -470,6 +502,14 @@ def build_admin_view(page: ft.Page) -> ft.Control:
 
         guardar_configuracion_facturacion(cfg_fact_guardar)
 
+        # ---- Configuración Gmail (notificaciones) ----
+        cfg_gmail_guardar = {
+            "gmail_user": (txt_gmail_user.value or "").strip() or None,
+            "gmail_app_password": (txt_gmail_app_password.value or "").strip() or None,
+            "habilitado": bool(sw_habilitar_email.value),
+        }
+        guardar_configuracion_gmail(cfg_gmail_guardar)
+
         page.snack_bar = ft.SnackBar(
             content=ft.Text("Configuración de horario y facturación guardada.")
         )
@@ -494,6 +534,16 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             txt_nombre,
             ft.Row([txt_direccion], spacing=10),
             ft.Row([dd_zona_horaria, txt_telefono, txt_email], spacing=10),
+
+            ft.Divider(),
+            ft.Text("Notificaciones por correo (Gmail)", weight="bold"),
+            ft.Text(
+                "Configura el correo Gmail y su clave de aplicación para enviar confirmaciones y cancelaciones.",
+                size=12,
+                color=ft.Colors.GREY_700,
+            ),
+            ft.Row([txt_gmail_user, txt_gmail_app_password], spacing=10),
+            ft.Row([sw_habilitar_email], spacing=10),
             ft.Divider(),
             ft.Text("Información complementaria para facturación", weight="bold"),
             ft.Text(
