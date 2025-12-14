@@ -289,8 +289,9 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS bloqueos_agenda (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             motivo TEXT NOT NULL,
-            fecha_hora TEXT NOT NULL    -- 'YYYY-MM-DD HH:MM'
-        );
+            fecha_hora_inicio TEXT NOT NULL,
+            fecha_hora_fin TEXT NOT NULL
+        )
         """
     )
 
@@ -1003,6 +1004,41 @@ def actualizar_cita(cita_id: int, campos: Dict[str, Any]) -> None:
     conn.commit()
     conn.close()
 
+def existe_cita_en_rango(fecha_inicio: str, fecha_fin: str, cita_id_excluir: int | None = None) -> bool:
+    """
+    Retorna True si existe al menos una cita con fecha_hora dentro del rango [fecha_inicio, fecha_fin).
+    Formato: 'YYYY-MM-DD HH:MM'
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    if cita_id_excluir is None:
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM citas
+            WHERE datetime(fecha_hora) >= datetime(?)
+              AND datetime(fecha_hora) < datetime(?);
+            """,
+            (fecha_inicio, fecha_fin),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM citas
+            WHERE datetime(fecha_hora) >= datetime(?)
+              AND datetime(fecha_hora) < datetime(?)
+              AND id != ?;
+            """,
+            (fecha_inicio, fecha_fin, cita_id_excluir),
+        )
+
+    count = cur.fetchone()[0]
+    conn.close()
+    return count > 0
+
+
 def eliminar_cita(cita_id: int) -> None:
     """Elimina una cita de la base de datos."""
     conn = get_connection()
@@ -1012,130 +1048,6 @@ def eliminar_cita(cita_id: int) -> None:
 
     conn.commit()
     conn.close()
-
-
-
-
-# ================== FIN C I T A S ====================
-
-
-
-# ===================== B L O Q U E O S   A G E N D A =====================
-
-def crear_bloqueo(bloqueo: Dict[str, Any]) -> int:
-    """
-    Crea un bloqueo de horario.
-    Espera:
-      - motivo (str)
-      - fecha_hora (str: 'YYYY-MM-DD HH:MM')
-    Devuelve el id autogenerado.
-    """
-    conn = get_connection()
-    cur = conn.cursor()
-
-    datos = dict(bloqueo)
-    cur.execute(
-        """
-        INSERT INTO bloqueos_agenda (
-            motivo,
-            fecha_hora
-        ) VALUES (
-            :motivo,
-            :fecha_hora
-        );
-        """,
-        datos,
-    )
-
-    bloqueo_id = cur.lastrowid
-    conn.commit()
-    conn.close()
-    return bloqueo_id
-
-
-def listar_bloqueos_rango(fecha_inicio: str, fecha_fin: str) -> List[Any]:
-    """
-    Lista bloqueos entre dos fechas/horas (inclusive), ordenados por fecha_hora.
-    Formato de fechas: 'YYYY-MM-DD HH:MM'
-    """
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        SELECT *
-        FROM bloqueos_agenda
-        WHERE fecha_hora >= ? AND fecha_hora <= ?
-        ORDER BY fecha_hora;
-        """,
-        (fecha_inicio, fecha_fin),
-    )
-
-    filas = cur.fetchall()
-    conn.close()
-    return filas
-
-
-def actualizar_bloqueo(bloqueo_id: int, datos: Dict[str, Any]) -> None:
-    """
-    Actualiza un bloqueo (solo motivo y fecha_hora por ahora).
-    """
-    conn = get_connection()
-    cur = conn.cursor()
-
-    params = dict(datos)
-    params["id"] = bloqueo_id
-
-    cur.execute(
-        """
-        UPDATE bloqueos_agenda
-        SET motivo = :motivo,
-            fecha_hora = :fecha_hora
-        WHERE id = :id;
-        """,
-        params,
-    )
-
-    conn.commit()
-    conn.close()
-
-
-def eliminar_bloqueo(bloqueo_id: int) -> None:
-    """Elimina un bloqueo de agenda."""
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute(
-        "DELETE FROM bloqueos_agenda WHERE id = ?;",
-        (bloqueo_id,),
-    )
-
-    conn.commit()
-    conn.close()
-
-
-def existe_bloqueo_en_fecha(fecha_hora: str, bloqueo_id_excluir: Optional[int] = None) -> bool:
-    """
-    Devuelve True si ya existe un bloqueo exactamente en esa fecha_hora.
-    Si bloqueo_id_excluir no es None, se excluye ese id (útil en edición).
-    """
-    conn = get_connection()
-    cur = conn.cursor()
-
-    if bloqueo_id_excluir is None:
-        cur.execute(
-            "SELECT COUNT(*) FROM bloqueos_agenda WHERE fecha_hora = ?;",
-            (fecha_hora,),
-        )
-    else:
-        cur.execute(
-            "SELECT COUNT(*) FROM bloqueos_agenda WHERE fecha_hora = ? AND id != ?;",
-            (fecha_hora, bloqueo_id_excluir),
-        )
-
-    count = cur.fetchone()[0]
-    conn.close()
-    return count > 0
 
 # ------------ CONFIGURACIÓN PROFESIONAL -------------
 
@@ -1227,224 +1139,248 @@ def guardar_configuracion_profesional(cfg: dict) -> None:
     conn.commit()
     conn.close()
 
-# ------------ CONFIGURACIÓN FACTURACIÓN -------------
-
-def obtener_configuracion_facturacion() -> dict:
-    """
-    Devuelve la configuración de facturación (prefijo, consecutivo, datos bancarios).
-    Si no existe el registro id=1, lo crea con valores por defecto.
-    """
-    conn = get_connection()
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-
-    cur.execute("SELECT * FROM configuracion_facturacion WHERE id = 1;")
-    row = cur.fetchone()
-
-    if row is None:
-        cur.execute(
-            """
-            INSERT INTO configuracion_facturacion (
-                id, prefijo_factura, ultimo_consecutivo
-            )
-            VALUES (1, 'PS', 0);
-            """
-        )
-        conn.commit()
-        cur.execute("SELECT * FROM configuracion_facturacion WHERE id = 1;")
-        row = cur.fetchone()
-
-    cfg = {
-        "prefijo_factura": row["prefijo_factura"],
-        "ultimo_consecutivo": row["ultimo_consecutivo"],
-        "banco": row["banco"],
-        "beneficiario": row["beneficiario"],
-        "nit": row["nit"],
-        "numero_cuenta": row["numero_cuenta"],
-        "forma_pago": row["forma_pago"],
-        "notas": row["notas"],
-    }
-
-    conn.close()
-    return cfg
-
-
-def guardar_configuracion_facturacion(cfg: dict) -> None:
-    """
-    Actualiza la configuración de facturación (siempre id=1).
-    Espera claves:
-      prefijo_factura, ultimo_consecutivo, banco, beneficiario, nit,
-      numero_cuenta, forma_pago, notas
-    """
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        INSERT INTO configuracion_facturacion (
-            id, prefijo_factura, ultimo_consecutivo,
-            banco, beneficiario, nit,
-            numero_cuenta, forma_pago, notas
-        )
-        VALUES (
-            1, :prefijo_factura, :ultimo_consecutivo,
-            :banco, :beneficiario, :nit,
-            :numero_cuenta, :forma_pago, :notas
-        )
-        ON CONFLICT(id) DO UPDATE SET
-            prefijo_factura = excluded.prefijo_factura,
-            ultimo_consecutivo = excluded.ultimo_consecutivo,
-            banco = excluded.banco,
-            beneficiario = excluded.beneficiario,
-            nit = excluded.nit,
-            numero_cuenta = excluded.numero_cuenta,
-            forma_pago = excluded.forma_pago,
-            notas = excluded.notas;
-        """,
-        {
-            "prefijo_factura": cfg.get("prefijo_factura", "PS"),
-            "ultimo_consecutivo": cfg.get("ultimo_consecutivo", 0),
-            "banco": cfg.get("banco"),
-            "beneficiario": cfg.get("beneficiario"),
-            "nit": cfg.get("nit"),
-            "numero_cuenta": cfg.get("numero_cuenta"),
-            "forma_pago": cfg.get("forma_pago"),
-            "notas": cfg.get("notas"),
-        },
-    )
-
-    conn.commit()
-    conn.close()
-
-
-
-
-
-
-
 # ------------ HORARIOS POR DÍA -------------
 
-
-def obtener_horarios_atencion() -> list[dict]:
-    """
-    Devuelve una lista de 7 dicts (0=Lunes .. 6=Domingo) con:
-      dia, habilitado (bool), hora_inicio (str "HH:MM"), hora_fin (str "HH:MM")
-    """
+def obtener_horarios_atencion() -> List[sqlite3.Row]:
+    """Devuelve las 7 filas de horarios (0=Lunes..6=Domingo)."""
     conn = get_connection()
-    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
     cur.execute(
         """
         SELECT dia, habilitado, hora_inicio, hora_fin
         FROM horarios_atencion
-        ORDER BY dia;
+        ORDER BY dia ASC;
         """
     )
     filas = cur.fetchall()
     conn.close()
-
-    horarios = []
-    for row in filas:
-        horarios.append(
-            {
-                "dia": row["dia"],
-                "habilitado": bool(row["habilitado"]),
-                "hora_inicio": row["hora_inicio"],
-                "hora_fin": row["hora_fin"],
-            }
-        )
-
-    return horarios
+    return filas
 
 
-def guardar_horarios_atencion(horarios: list[dict]) -> None:
+def guardar_horarios_atencion(lista_horarios: List[Dict[str, Any]]) -> None:
     """
-    Recibe lista de dicts con claves:
-      dia (int 0-6), habilitado (bool/int), hora_inicio, hora_fin
-    y los guarda en la tabla horarios_atencion.
+    Guarda horarios por día.
+    Espera lista de dicts con:
+      - dia (int 0..6)
+      - habilitado (bool/int)
+      - hora_inicio (str 'HH:MM')
+      - hora_fin (str 'HH:MM')
     """
     conn = get_connection()
     cur = conn.cursor()
 
-    for h in horarios:
+    for h in lista_horarios or []:
+        dia = int(h.get("dia"))
+        habilitado = 1 if bool(h.get("habilitado")) else 0
+        hora_inicio = (h.get("hora_inicio") or "08:00").strip()
+        hora_fin = (h.get("hora_fin") or "17:00").strip()
+
         cur.execute(
             """
             UPDATE horarios_atencion
             SET habilitado = ?, hora_inicio = ?, hora_fin = ?
             WHERE dia = ?;
             """,
-            (
-                1 if h.get("habilitado") else 0,
-                h.get("hora_inicio"),
-                h.get("hora_fin"),
-                h.get("dia"),
-            ),
+            (habilitado, hora_inicio, hora_fin, dia),
         )
 
     conn.commit()
     conn.close()
 
-# ------------ SERVICIOS / MODALIDADES -------------
+
+# ================== FIN C I T A S ====================
 
 
-def listar_servicios() -> List[Dict[str, Any]]:
-    """Devuelve los servicios activos/inactivos como lista de dicts."""
+
+# ===================== B L O Q U E O S   A G E N D A =====================
+
+def crear_bloqueo(bloqueo: Dict[str, Any]) -> int:
+    """
+    Crea un bloqueo de horario.
+    Espera:
+      - motivo (str)
+      - fecha_hora (str: 'YYYY-MM-DD HH:MM')
+    Devuelve el id autogenerado.
+    """
     conn = get_connection()
-    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    datos = dict(bloqueo)
+    cur.execute(
+        """
+        INSERT INTO bloqueos_agenda (
+            motivo,
+            fecha_hora_inicio,
+            fecha_hora_fin
+        ) VALUES (
+            :motivo,
+            :fecha_hora_inicio,
+            :fecha_hora_fin
+        );
+        """,
+        datos,
+    )
+
+    bloqueo_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return bloqueo_id
+
+
+def listar_bloqueos_rango(fecha_inicio: str, fecha_fin: str) -> List[Any]:
+    """
+    Lista bloqueos entre dos fechas/horas (inclusive), ordenados por fecha_hora.
+    Formato de fechas: 'YYYY-MM-DD HH:MM'
+    """
+    conn = get_connection()
     cur = conn.cursor()
 
     cur.execute(
         """
         SELECT *
-        FROM servicios
-        ORDER BY activo DESC, nombre COLLATE NOCASE;
-        """
+        FROM bloqueos_agenda
+        WHERE NOT (fecha_hora_fin <= ? OR fecha_hora_inicio >= ?)
+        ORDER BY fecha_hora_inicio;
+        """,
+        (fecha_inicio, fecha_fin),
     )
 
     filas = cur.fetchall()
     conn.close()
-    return [dict(r) for r in filas]
+    return filas
 
 
-def crear_servicio(
-    nombre: str,
-    modalidad: str,
-    precio: float,
-    empresa: str | None = None,
-) -> None:
-    """Crea un servicio.
+def actualizar_bloqueo(bloqueo_id: int, datos: Dict[str, Any]) -> None:
+    """
+    Actualiza un bloqueo (solo motivo y fecha_hora por ahora).
+    """
+    conn = get_connection()
+    cur = conn.cursor()
 
-    - modalidad: 'particular' | 'convenio'
-    - empresa: solo aplica si modalidad='convenio' (si no, se fuerza a None)
+    params = dict(datos)
+    params["id"] = bloqueo_id
+
+    cur.execute(
+        """
+        UPDATE bloqueos_agenda
+        SET motivo = :motivo,
+            fecha_hora_inicio = :fecha_hora_inicio,
+            fecha_hora_fin = :fecha_hora_fin
+        WHERE id = :id;
+        """,
+        params,
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def eliminar_bloqueo(bloqueo_id: int) -> None:
+    """Elimina un bloqueo de agenda."""
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        "DELETE FROM bloqueos_agenda WHERE id = ?;",
+        (bloqueo_id,),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def existe_bloqueo_en_rango(fecha_inicio: str, fecha_fin: str, bloqueo_id_excluir: Optional[int] = None) -> bool:
+    """
+    Devuelve True si existe algún bloqueo que se SOLAPE con el rango [fecha_inicio, fecha_fin).
+    Formato: 'YYYY-MM-DD HH:MM'
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    if bloqueo_id_excluir is None:
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM bloqueos_agenda
+            WHERE NOT (fecha_hora_fin <= ? OR fecha_hora_inicio >= ?);
+            """,
+            (fecha_inicio, fecha_fin),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM bloqueos_agenda
+            WHERE NOT (fecha_hora_fin <= ? OR fecha_hora_inicio >= ?)
+              AND id != ?;
+            """,
+            (fecha_inicio, fecha_fin, bloqueo_id_excluir),
+        )
+
+    count = cur.fetchone()[0]
+    conn.close()
+    return count > 0
+
+
+def existe_bloqueo_en_fecha(fecha_hora: str, bloqueo_id_excluir: Optional[int] = None) -> bool:
+    """
+    Compat: considera un bloqueo de 1 hora a partir de fecha_hora.
+    """
+    # rango [fecha_hora, fecha_hora+60min)
+    try:
+        dt = datetime.strptime(fecha_hora[:16], "%Y-%m-%d %H:%M")
+    except Exception:
+        return False
+    dt_fin = dt + timedelta(minutes=60)
+    return existe_bloqueo_en_rango(dt.strftime("%Y-%m-%d %H:%M"), dt_fin.strftime("%Y-%m-%d %H:%M"), bloqueo_id_excluir)
+
+
+
+def crear_servicio(nombre: str, modalidad: str, precio: float, empresa: str | None = None, activo: bool = True) -> int:
+    """
+    Crea un servicio. modalidad: 'particular' | 'convenio'. empresa solo para convenio.
+    Devuelve el id del servicio creado.
     """
     nombre = (nombre or "").strip()
     modalidad = (modalidad or "").strip().lower()
-    empresa = (empresa or "").strip() or None
-
-    if not nombre:
-        raise ValueError("El nombre del servicio es obligatorio.")
 
     if modalidad not in ("particular", "convenio"):
-        raise ValueError("Modalidad inválida. Usa 'particular' o 'convenio'.")
+        raise ValueError("Modalidad inválida. Debe ser 'particular' o 'convenio'.")
 
     if modalidad != "convenio":
         empresa = None
     else:
-        if not empresa:
-            raise ValueError("La empresa es obligatoria para servicios de convenio.")
+        empresa = (empresa or "").strip() or None
 
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
         """
         INSERT INTO servicios (nombre, modalidad, precio, empresa, activo)
-        VALUES (?, ?, ?, ?, 1);
+        VALUES (?, ?, ?, ?, ?);
         """,
-        (nombre, modalidad, float(precio), empresa),
+        (nombre, modalidad, float(precio), empresa, 1 if activo else 0),
     )
+    servicio_id = cur.lastrowid
     conn.commit()
     conn.close()
+    return servicio_id
+
+
+def listar_servicios(incluir_inactivos: bool = False) -> list[dict]:
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    if incluir_inactivos:
+        cur.execute("SELECT * FROM servicios ORDER BY nombre ASC;")
+    else:
+        cur.execute("SELECT * FROM servicios WHERE activo = 1 ORDER BY nombre ASC;")
+
+    rows = cur.fetchall() or []
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def actualizar_servicio(
@@ -2592,15 +2528,165 @@ def resumen_paquetes_arriendo() -> Dict[str, Any]:
     }
 
 
+# ------------ CONFIGURACIÓN FACTURACIÓN -------------
+
+def obtener_configuracion_facturacion() -> dict:
+    """
+    Devuelve la configuración de facturación (prefijo, consecutivo, datos bancarios).
+    Si no existe el registro id=1, lo crea con valores por defecto.
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute("SELECT * FROM configuracion_facturacion WHERE id = 1;")
+    row = cur.fetchone()
+
+    if row is None:
+        cur.execute(
+            """
+            INSERT INTO configuracion_facturacion (id, prefijo_factura, ultimo_consecutivo)
+            VALUES (1, 'PS', 0);
+            """
+        )
+        conn.commit()
+        cur.execute("SELECT * FROM configuracion_facturacion WHERE id = 1;")
+        row = cur.fetchone()
+
+    cfg = {
+        "prefijo_factura": row["prefijo_factura"],
+        "ultimo_consecutivo": row["ultimo_consecutivo"],
+        "banco": row["banco"],
+        "beneficiario": row["beneficiario"],
+        "nit": row["nit"],
+        "numero_cuenta": row["numero_cuenta"],
+        "forma_pago": row["forma_pago"],
+        "notas": row["notas"],
+    }
+
+    conn.close()
+    return cfg
+
+
+def guardar_configuracion_facturacion(cfg: dict) -> None:
+    """
+    Actualiza la configuración de facturación (siempre id=1).
+    Espera claves:
+      prefijo_factura, ultimo_consecutivo, banco, beneficiario, nit,
+      numero_cuenta, forma_pago, notas
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        INSERT INTO configuracion_facturacion (
+            id, prefijo_factura, ultimo_consecutivo,
+            banco, beneficiario, nit, numero_cuenta, forma_pago, notas
+        )
+        VALUES (
+            1, :prefijo_factura, :ultimo_consecutivo,
+            :banco, :beneficiario, :nit, :numero_cuenta, :forma_pago, :notas
+        )
+        ON CONFLICT(id) DO UPDATE SET
+            prefijo_factura     = excluded.prefijo_factura,
+            ultimo_consecutivo  = excluded.ultimo_consecutivo,
+            banco               = excluded.banco,
+            beneficiario        = excluded.beneficiario,
+            nit                 = excluded.nit,
+            numero_cuenta       = excluded.numero_cuenta,
+            forma_pago          = excluded.forma_pago,
+            notas               = excluded.notas;
+        """,
+        {
+            "prefijo_factura": cfg.get("prefijo_factura", "PS"),
+            "ultimo_consecutivo": int(cfg.get("ultimo_consecutivo", 0) or 0),
+            "banco": cfg.get("banco"),
+            "beneficiario": cfg.get("beneficiario"),
+            "nit": cfg.get("nit"),
+            "numero_cuenta": cfg.get("numero_cuenta"),
+            "forma_pago": cfg.get("forma_pago"),
+            "notas": cfg.get("notas"),
+        },
+    )
+
+    conn.commit()
+    conn.close()
+
+
 
 
 # ------------ FIN -------------
+
 
 
 if __name__ == "__main__":
     print(f"Inicializando base de datos en: {DB_PATH}")
     init_db()
     print("Tablas listas.")
-    # Puedes agregar código de prueba aquí si lo deseas
 
-    
+    # ---------------- Datos de prueba (idempotentes) ----------------
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        # Profesional (config id=1)
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO configuracion_profesional (id, nombre_profesional, hora_inicio, hora_fin, dias_atencion, direccion, zona_horaria, telefono, email)
+            VALUES (1, 'Sara Psicóloga', '08:00', '18:00', 'Lunes,Martes,Miercoles,Jueves,Viernes', 'Consultorio', 'America/Bogota', '', '');
+            """
+        )
+
+        # Empresa convenio de prueba
+        cur.execute(
+            "INSERT OR IGNORE INTO empresas_convenio (nombre) VALUES ('Empresa Prueba S.A');"
+        )
+        cur.execute("SELECT id FROM empresas_convenio WHERE nombre = 'Empresa Prueba S.A' LIMIT 1;")
+        emp_id = cur.fetchone()[0]
+
+        # Servicios de prueba
+        # Particular
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO servicios (nombre, modalidad, precio, empresa, activo)
+            VALUES ('Atención Psicológica', 'particular', 110000, NULL, 1);
+            """
+        )
+        # Convenio (empresa por nombre)
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO servicios (nombre, modalidad, precio, empresa, activo)
+            VALUES ('Atención Convenio', 'convenio', 85000, 'Empresa Prueba S.A', 1);
+            """
+        )
+
+        # Paciente de prueba
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO pacientes (
+            documento, 
+            tipo_documento, 
+            nombre_completo, 
+            fecha_nacimiento, 
+            sexo, 
+            estado_civil, 
+            escolaridad,
+            eps,
+            direccion, 
+            email,
+            indicativo_pais, 
+            telefono,
+            contacto_emergencia_nombre, 
+            contacto_emergencia_telefono,
+            observaciones 
+            )
+            VALUES ('1212121', 'CC', 'Pruebin Pruebas', '1990-01-01', 'M', 'Unión Libre', 'Pendejo', 'Sura', 'Calle falsa', 'lejozapata@gmail.com', '57', '3217769952', '', '', '');
+            """
+        )
+
+        conn.commit()
+        conn.close()
+        print("Datos de prueba insertados.")
+    except Exception as e:
+        print(f"No se pudieron insertar datos de prueba: {e}")

@@ -12,7 +12,6 @@ import threading
 import urllib.parse
 
 from db import (
-    obtener_configuracion_profesional,
     obtener_horarios_atencion,
     listar_pacientes,
     listar_servicios,
@@ -21,11 +20,13 @@ from db import (
     actualizar_cita,
     eliminar_cita,
     existe_cita_en_fecha,
+    existe_cita_en_rango,
     crear_bloqueo,
     listar_bloqueos_rango,
     actualizar_bloqueo,
     eliminar_bloqueo,
     existe_bloqueo_en_fecha,
+    existe_bloqueo_en_rango,
     obtener_configuracion_profesional,
 )
 
@@ -89,6 +90,10 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
     # DatePicker para seleccionar fecha de la cita
     date_picker = ft.DatePicker()
     page.overlay.append(date_picker)
+    # DatePicker para seleccionar fecha del bloqueo
+    bloqueo_date_picker = ft.DatePicker()
+    page.overlay.append(bloqueo_date_picker)
+
 
     # ==================== CONFIG / HORARIOS ====================
 
@@ -498,12 +503,13 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
     )
 
     # Boton whatsapp
+    ICON_WHATSAPP = "imagenes/whatsapp-icon.png"
 
     btn_whatsapp_confirmacion = ft.ElevatedButton(
         content=ft.Row(
             [
                 ft.Image(
-                    src="https://cdn-icons-png.flaticon.com/512/3536/3536445.png",
+                    src=ICON_WHATSAPP,
                     width=18,
                     height=18,
                 ),
@@ -1105,12 +1111,31 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
     titulo_bloqueo = ft.Text("Bloquear horario", size=20, weight="bold")
 
-    # Mostramos el horario en un solo campo de texto, solo lectura
-    txt_bloqueo_fecha_hora = ft.TextField(
-        label="Horario",
-        width=250,
+    # Estado del formulario de bloqueo
+    bloqueo_form = {
+        "fecha": None,  # date
+    }
+
+    # Fecha del bloqueo (con DatePicker, como en las reservas)
+    txt_bloqueo_fecha = ft.TextField(
+        label="Fecha",
         read_only=True,
+        width=200,
     )
+    btn_bloqueo_fecha = ft.IconButton(
+        icon=ft.Icons.CALENDAR_MONTH,
+        tooltip="Cambiar fecha",
+    )
+
+    # Dropdowns de hora/minuto (inicio y fin), como en reservas
+    _opciones_horas = [ft.dropdown.Option(f"{h:02d}") for h in range(0, 24)]
+    _opciones_minutos = [ft.dropdown.Option(f"{m:02d}") for m in range(0, 60, 5)]
+
+    dd_bloq_hora_ini = ft.Dropdown(label="Hora inicio", width=110, options=_opciones_horas)
+    dd_bloq_min_ini = ft.Dropdown(label="Minuto inicio", width=110, options=_opciones_minutos)
+
+    dd_bloq_hora_fin = ft.Dropdown(label="Hora fin", width=110, options=_opciones_horas)
+    dd_bloq_min_fin = ft.Dropdown(label="Minuto fin", width=110, options=_opciones_minutos)
 
     txt_bloqueo_motivo = ft.TextField(
         label="Motivo / etiqueta",
@@ -1122,6 +1147,25 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
     mensaje_error_bloqueo = ft.Text("", color=ft.Colors.RED, visible=False, size=12)
 
+    # --- Manejo de DatePicker para la fecha del bloqueo ---
+    def abrir_datepicker_bloqueo(e=None):
+        if bloqueo_form["fecha"]:
+            bloqueo_date_picker.value = bloqueo_form["fecha"]
+        else:
+            bloqueo_date_picker.value = hoy
+        bloqueo_date_picker.open = True
+        page.update()
+
+    def on_fecha_bloqueo_cambiada(e=None):
+        if bloqueo_date_picker.value:
+            bloqueo_form["fecha"] = bloqueo_date_picker.value
+            txt_bloqueo_fecha.value = bloqueo_date_picker.value.strftime("%Y-%m-%d")
+            if txt_bloqueo_fecha.page is not None:
+                txt_bloqueo_fecha.update()
+
+    btn_bloqueo_fecha.on_click = abrir_datepicker_bloqueo
+    txt_bloqueo_fecha.on_tap = abrir_datepicker_bloqueo
+    bloqueo_date_picker.on_change = on_fecha_bloqueo_cambiada
 
     def cerrar_dialogo_bloqueo(e=None):
         dialogo_bloqueo.open = False
@@ -1146,7 +1190,20 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         h = minuto // 60
         mm = minuto % 60
 
-        txt_bloqueo_fecha_hora.value = f"{dia.strftime('%Y-%m-%d')} {h:02d}:{mm:02d}"
+        # Fecha
+        bloqueo_form["fecha"] = dia
+        txt_bloqueo_fecha.value = dia.strftime("%Y-%m-%d")
+
+        # Inicio
+        dd_bloq_hora_ini.value = f"{h:02d}"
+        dd_bloq_min_ini.value = f"{mm:02d}"
+
+        # Fin (por defecto: 1 slot)
+        dt_ini = datetime(dia.year, dia.month, dia.day, h, mm)
+        dt_fin = dt_ini + timedelta(minutes=int(slot_minutes.get("value") or 60))
+        dd_bloq_hora_fin.value = f"{dt_fin.hour:02d}"
+        dd_bloq_min_fin.value = f"{dt_fin.minute:02d}"
+
         titulo_bloqueo.value = "Bloquear horario"
         actualizar_acciones_dialogo_bloqueo()
 
@@ -1163,7 +1220,44 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         bloqueo_editando_id["value"] = bloq_row["id"]
         titulo_bloqueo.value = "Editar bloqueo de horario"
 
-        txt_bloqueo_fecha_hora.value = bloq_row["fecha_hora"][:16]
+        fh_ini = (bloq_row.get("fecha_hora_inicio") or bloq_row.get("fecha_hora") or "").strip()
+        fh_fin = (bloq_row.get("fecha_hora_fin") or "").strip()
+
+        if not fh_ini:
+            # Si por algún motivo no hay inicio, no abrimos edición
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text("Bloqueo inválido: falta fecha/hora de inicio."), bgcolor=ft.Colors.AMBER_300
+                )
+                page.snack_bar.open = True
+                page.update()
+                return
+
+        try:
+                dt_ini = datetime.strptime(fh_ini[:16], "%Y-%m-%d %H:%M")
+        except Exception:
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text("Bloqueo inválido: formato de fecha/hora."), bgcolor=ft.Colors.AMBER_300
+                )
+                page.snack_bar.open = True
+                page.update()
+                return
+
+        if fh_fin:
+                try:
+                    dt_fin = datetime.strptime(fh_fin[:16], "%Y-%m-%d %H:%M")
+                except Exception:
+                    dt_fin = dt_ini + timedelta(minutes=int(slot_minutes.get("value") or 60))
+        else:
+                dt_fin = dt_ini + timedelta(minutes=int(slot_minutes.get("value") or 60))
+
+        bloqueo_form["fecha"] = dt_ini.date()
+        txt_bloqueo_fecha.value = dt_ini.strftime("%Y-%m-%d")
+
+        dd_bloq_hora_ini.value = f"{dt_ini.hour:02d}"
+        dd_bloq_min_ini.value = f"{dt_ini.minute:02d}"
+        dd_bloq_hora_fin.value = f"{dt_fin.hour:02d}"
+        dd_bloq_min_fin.value = f"{dt_fin.minute:02d}"
+
         txt_bloqueo_motivo.value = bloq_row.get("motivo", "")
 
         mensaje_error_bloqueo.value = ""
@@ -1177,120 +1271,137 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         page.update()
 
     def guardar_bloqueo(e=None):
-        """Crea o actualiza un bloqueo."""
-        mensaje_error_bloqueo.visible = False
-        mensaje_error_bloqueo.value = ""
+            """Crea o actualiza un bloqueo (rango) usando DatePicker + Dropdowns."""
+            mensaje_error_bloqueo.visible = False
+            mensaje_error_bloqueo.value = ""
 
-        motivo = (txt_bloqueo_motivo.value or "").strip()
-        if not motivo:
-            mensaje_error_bloqueo.value = "Debes ingresar un motivo para el bloqueo."
-            mensaje_error_bloqueo.visible = True
-            if mensaje_error_bloqueo.page is not None:
-                mensaje_error_bloqueo.update()
-            return
+            motivo = (txt_bloqueo_motivo.value or "").strip()
+            if not motivo:
+                mensaje_error_bloqueo.value = "Debes ingresar un motivo para el bloqueo."
+                mensaje_error_bloqueo.visible = True
+                if mensaje_error_bloqueo.page is not None:
+                    mensaje_error_bloqueo.update()
+                return
 
-        fecha_hora_str = txt_bloqueo_fecha_hora.value.strip()
-        if not fecha_hora_str:
-            mensaje_error_bloqueo.value = "Horario inválido."
-            mensaje_error_bloqueo.visible = True
-            if mensaje_error_bloqueo.page is not None:
-                mensaje_error_bloqueo.update()
-            return
+            fecha_obj = bloqueo_form.get("fecha")
+            if not fecha_obj:
+                mensaje_error_bloqueo.value = "Debes seleccionar una fecha."
+                mensaje_error_bloqueo.visible = True
+                if mensaje_error_bloqueo.page is not None:
+                    mensaje_error_bloqueo.update()
+                return
 
-        # Validación: no debe haber otra cita en ese slot
-        if existe_cita_en_fecha(fecha_hora_str, None):
-            mensaje_error_bloqueo.value = (
-                "Ya existe una cita en este horario. "
-                "No se puede crear un bloqueo aquí."
-            )
-            mensaje_error_bloqueo.visible = True
-            if mensaje_error_bloqueo.page is not None:
-                mensaje_error_bloqueo.update()
-            return
+            try:
+                h_ini = int(dd_bloq_hora_ini.value)
+                m_ini = int(dd_bloq_min_ini.value)
+                h_fin = int(dd_bloq_hora_fin.value)
+                m_fin = int(dd_bloq_min_fin.value)
+            except Exception:
+                mensaje_error_bloqueo.value = "Debes seleccionar hora y minuto de inicio y fin."
+                mensaje_error_bloqueo.visible = True
+                if mensaje_error_bloqueo.page is not None:
+                    mensaje_error_bloqueo.update()
+                return
 
-        if bloqueo_editando_id["value"] is None:
-            # Validar también que no haya OTRO bloqueo en ese slot
-            if existe_bloqueo_en_fecha(fecha_hora_str, None):
+            dt_ini = datetime(fecha_obj.year, fecha_obj.month, fecha_obj.day, h_ini, m_ini)
+            dt_fin = datetime(fecha_obj.year, fecha_obj.month, fecha_obj.day, h_fin, m_fin)
+
+            if dt_fin <= dt_ini:
+                mensaje_error_bloqueo.value = "La hora de fin debe ser mayor que la de inicio."
+                mensaje_error_bloqueo.visible = True
+                if mensaje_error_bloqueo.page is not None:
+                    mensaje_error_bloqueo.update()
+                return
+
+            ini_str = dt_ini.strftime("%Y-%m-%d %H:%M")
+            fin_str = dt_fin.strftime("%Y-%m-%d %H:%M")
+
+            # Validación: no debe haber citas en el rango
+            if existe_cita_en_rango(ini_str, fin_str, None):
                 mensaje_error_bloqueo.value = (
-                    "Ya existe un bloqueo en este horario."
+                    "Ya existe una cita en este horario. "
+                    "No se puede crear un bloqueo aquí."
                 )
                 mensaje_error_bloqueo.visible = True
                 if mensaje_error_bloqueo.page is not None:
                     mensaje_error_bloqueo.update()
                 return
 
-            crear_bloqueo(
-                {
-                    "motivo": motivo,
-                    "fecha_hora": fecha_hora_str,
-                }
-            )
-            msg_snack = "Bloqueo creado."
-        else:
-            # En edición no cambiamos el horario (solo motivo),
-            # por lo que no es necesario validar de nuevo contra otros bloqueos.
-            actualizar_bloqueo(
-                bloqueo_editando_id["value"],
-                {
-                    "motivo": motivo,
-                    "fecha_hora": fecha_hora_str,
-                },
-            )
-            msg_snack = "Bloqueo actualizado."
+            # Validación: no debe haber otro bloqueo solapado
+            excluir_id = bloqueo_editando_id["value"]
+            if existe_bloqueo_en_rango(ini_str, fin_str, excluir_id):
+                mensaje_error_bloqueo.value = "Ya existe un bloqueo que se solapa con este rango."
+                mensaje_error_bloqueo.visible = True
+                if mensaje_error_bloqueo.page is not None:
+                    mensaje_error_bloqueo.update()
+                return
 
-        dialogo_bloqueo.open = False
-        page.update()
+            payload = {
+                "motivo": motivo,
+                "fecha_hora_inicio": ini_str,
+                "fecha_hora_fin": fin_str,
+            }
 
-        dibujar_calendario_semanal()
+            if bloqueo_editando_id["value"] is None:
+                crear_bloqueo(payload)
+                msg_snack = "Bloqueo creado."
+            else:
+                actualizar_bloqueo(bloqueo_editando_id["value"], payload)
+                msg_snack = "Bloqueo actualizado."
 
-        page.snack_bar = ft.SnackBar(
-            content=ft.Text(msg_snack),
-            bgcolor=ft.Colors.GREY_300,
-        )
-        page.snack_bar.open = True
-        page.update()
-
-    def confirmar_eliminar_bloqueo(e=None):
-        """Muestra confirmación antes de eliminar un bloqueo."""
-        if bloqueo_editando_id["value"] is None:
-            # Si es nuevo y no hay nada guardado, simplemente cerramos
-            cerrar_dialogo_bloqueo()
-            return
-
-        def cancelar(ev=None):
-            dialog_confirm.open = False
-            page.update()
-
-        def confirmar(ev=None):
-            eliminar_bloqueo(bloqueo_editando_id["value"])
-            dialog_confirm.open = False
+            dialogo_bloqueo.open = False
             page.update()
 
             dibujar_calendario_semanal()
 
             page.snack_bar = ft.SnackBar(
-                content=ft.Text("Bloqueo eliminado."),
-                bgcolor=ft.Colors.RED_300,
+                content=ft.Text(msg_snack),
+                bgcolor=ft.Colors.GREY_300,
             )
             page.snack_bar.open = True
             page.update()
 
-        dialog_confirm = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Eliminar bloqueo"),
-            content=ft.Text(
-                "¿Seguro que deseas eliminar este bloqueo de horario?\n"
-                "Esta acción no se puede deshacer."
-            ),
-            
-            actions=[
-                ft.TextButton("Cancelar", on_click=cancelar),
-                ft.TextButton("Eliminar", on_click=confirmar),
-            ],
-        )
+    def confirmar_eliminar_bloqueo(e=None):
+            """Muestra confirmación antes de eliminar un bloqueo."""
+            if bloqueo_editando_id["value"] is None:
+                # Si es nuevo y no hay nada guardado, simplemente cerramos
+                cerrar_dialogo_bloqueo()
+                return
 
-        # Abrir diálogo de confirmación (cierra el de bloqueo mientras tanto)
-        page.open(dialog_confirm)
+            def cancelar(ev=None):
+                dialog_confirm.open = False
+                page.update()
+
+            def confirmar(ev=None):
+                eliminar_bloqueo(bloqueo_editando_id["value"])
+                dialog_confirm.open = False
+                page.update()
+
+                dibujar_calendario_semanal()
+
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text("Bloqueo eliminado."),
+                    bgcolor=ft.Colors.RED_300,
+                )
+                page.snack_bar.open = True
+                page.update()
+
+            dialog_confirm = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Eliminar bloqueo"),
+                content=ft.Text(
+                    "¿Seguro que deseas eliminar este bloqueo de horario?\n"
+                    "Esta acción no se puede deshacer."
+                ),
+                
+                actions=[
+                    ft.TextButton("Cancelar", on_click=cancelar),
+                    ft.TextButton("Eliminar", on_click=confirmar),
+                ],
+            )
+
+            # Abrir diálogo de confirmación (cierra el de bloqueo mientras tanto)
+            page.open(dialog_confirm)
     
     def actualizar_acciones_dialogo_bloqueo():
         """Configura los botones del diálogo de bloqueo según si es nuevo o edición."""
@@ -1319,7 +1430,11 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         title=titulo_bloqueo,
         content=ft.Column(
             [
-                txt_bloqueo_fecha_hora,
+                ft.Row([txt_bloqueo_fecha, btn_bloqueo_fecha], spacing=5),
+                ft.Row(
+                    [dd_bloq_hora_ini, dd_bloq_min_ini, dd_bloq_hora_fin, dd_bloq_min_fin],
+                    spacing=10,
+                ),
                 txt_bloqueo_motivo,
                 mensaje_error_bloqueo,
             ],
@@ -1941,11 +2056,31 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             )
             bloques.append(bloque)
 
-              # ---- Bloqueos de horario en este slot ----
+        # ---- Bloqueos de horario en este slot ----
         for bloq in bloqueos_celda or []:
-            dtb = datetime.strptime(bloq["fecha_hora"][:16], "%Y-%m-%d %H:%M")
-            hora_txt = dtb.strftime("%H:%M")
+            # Compatibilidad: bloqueo viejo (fecha_hora) vs nuevo (fecha_hora_inicio/fin)
+            fh_ini = (bloq.get("fecha_hora") or bloq.get("fecha_hora_inicio") or "").strip()
+            fh_fin = (bloq.get("fecha_hora_fin") or "").strip()
+
+            if not fh_ini:
+                continue  # bloqueo mal formado, lo ignoramos para no tumbar la UI
+
+            dtb_ini = datetime.strptime(fh_ini[:16], "%Y-%m-%d %H:%M")
+            hora_txt = dtb_ini.strftime("%H:%M")
+
+            # Si hay fin, úsalo para tooltip más claro
+            rango_txt = ""
+            if fh_fin:
+                try:
+                    dtb_fin = datetime.strptime(fh_fin[:16], "%Y-%m-%d %H:%M")
+                    rango_txt = f"{hora_txt} - {dtb_fin.strftime('%H:%M')}"
+                except Exception:
+                    rango_txt = hora_txt
+            else:
+                rango_txt = hora_txt
+
             motivo = bloq.get("motivo", "")
+            tooltip_bloq = f"Bloqueo de horario\n{rango_txt}\n{motivo}"
 
             tooltip_bloq = f"Bloqueo de horario\n{hora_txt}\n{motivo}"
 
@@ -2106,15 +2241,25 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
         bloqueos_por_celda: dict[tuple[date, int], list[dict]] = {}
         for b in bloqueos_rows:
-            dtb = datetime.strptime(b["fecha_hora"][:16], "%Y-%m-%d %H:%M")
-            fecha_d = dtb.date()
-            total_min = dtb.hour * 60 + dtb.minute
-            if total_min < start_min or total_min > end_min:
+            ini_str = (b.get("fecha_hora_inicio") or b.get("fecha_hora") or "")[:16]
+            fin_str = (b.get("fecha_hora_fin") or "")[:16]
+            try:
+                dt_ini = datetime.strptime(ini_str, "%Y-%m-%d %H:%M")
+                dt_fin = datetime.strptime(fin_str, "%Y-%m-%d %H:%M") if fin_str else (dt_ini + timedelta(minutes=60))
+            except Exception:
                 continue
-            slot_idx = (total_min - start_min) // intervalo
-            slot_min = start_min + slot_idx * intervalo
-            key = (fecha_d, slot_min)
-            bloqueos_por_celda.setdefault(key, []).append(b)
+
+            # Iterar slots cubiertos por el bloqueo (fin exclusivo)
+            dt_cur = dt_ini
+            while dt_cur < dt_fin:
+                fecha_d = dt_cur.date()
+                total_min = dt_cur.hour * 60 + dt_cur.minute
+                if start_min <= total_min <= end_min:
+                    slot_idx = (total_min - start_min) // intervalo
+                    slot_min = start_min + slot_idx * intervalo
+                    key = (fecha_d, slot_min)
+                    bloqueos_por_celda.setdefault(key, []).append(b)
+                dt_cur += timedelta(minutes=intervalo)
 
         citas_por_celda: dict[tuple[date, int], list[dict]] = {}
         for c in citas_rows:

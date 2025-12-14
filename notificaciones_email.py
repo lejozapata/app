@@ -95,13 +95,21 @@ def enviar_correo_cita(
     email_prof = (cfg_profesional.get("email") or SMTP_USER or "").strip()
     direccion = cfg_profesional.get("direccion") or ""
     telefono_prof = cfg_profesional.get("telefono") or ""
-    modalidad_raw = datos_cita.get("modalidad") or ""
-    modalidad_map = {
+    # "Modalidad" en el correo debe reflejar el CANAL (presencial/virtual)
+    canal_raw = (datos_cita.get("canal") or "").strip()
+
+    canal_map = {
         "presencial": "Presencial",
         "virtual": "Virtual",
-        "convenio_empresarial": "Convenio empresarial",
     }
-    modalidad = modalidad_map.get(modalidad_raw, modalidad_raw)
+
+    # Compatibilidad con modelos antiguos
+    if not canal_raw:
+        fallback = (datos_cita.get("modalidad") or "").strip()
+        if fallback in canal_map:
+            canal_raw = fallback
+
+    modalidad = canal_map.get(canal_raw, "Presencial")
     motivo_raw = datos_cita.get("motivo") or ""
     # En el correo preferimos mostrar "Valor" en vez de "Precio"
     motivo = motivo_raw.replace("Precio", "Valor")
@@ -313,13 +321,21 @@ def enviar_correo_cancelacion(
     nombre_prof = cfg_profesional.get("nombre_profesional") or "Tu profesional"
     email_prof = (cfg_profesional.get("email") or SMTP_USER or "").strip()
 
-    modalidad_raw = datos_cita.get("modalidad") or ""
-    modalidad_map = {
+    # "Modalidad" en el correo debe reflejar el CANAL (presencial/virtual)
+    canal_raw = (datos_cita.get("canal") or "").strip()
+
+    canal_map = {
         "presencial": "Presencial",
         "virtual": "Virtual",
-        "convenio_empresarial": "Convenio empresarial",
     }
-    modalidad = modalidad_map.get(modalidad_raw, modalidad_raw)
+
+    # Compatibilidad con modelos antiguos
+    if not canal_raw:
+        fallback = (datos_cita.get("modalidad") or "").strip()
+        if fallback in canal_map:
+            canal_raw = fallback
+
+    modalidad = canal_map.get(canal_raw, "Presencial")
 
     motivo_raw = datos_cita.get("motivo") or ""
     motivo = motivo_raw.replace("Precio", "Valor")
