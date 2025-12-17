@@ -22,6 +22,7 @@ from db import (
     obtener_configuracion_profesional,
     obtener_configuracion_facturacion,
     total_a_letras_pesos,
+    actualizar_ruta_pdf_factura_convenio,
 )
 
 
@@ -63,7 +64,7 @@ def _image_scaled(path: str, max_width_mm: float, max_height_mm: float):
 # ---------- Generación de PDF ----------
 
 
-def generar_pdf_factura(factura_id: int, abrir: bool = True) -> str:
+def generar_pdf_factura(factura_id: int, abrir: bool = True, force: bool = False) -> str:
     """
     Genera un PDF de factura de convenio en 2 páginas:
     - Página 1: Encabezado, datos empresa, detalle, totales, forma de pago, SON, datos bancarios.
@@ -86,14 +87,22 @@ def generar_pdf_factura(factura_id: int, abrir: bool = True) -> str:
 
     archivo_pdf = os.path.join(facturas_dir, f"{numero} - Sara Hernandez.pdf")
 
-    # Si el archivo ya existe, solo lo abrimos y devolvemos la ruta
-    if os.path.exists(archivo_pdf):
+    # Si existe y NO queremos reemplazar, lo abrimos y ya
+    if os.path.exists(archivo_pdf) and not force:
         if abrir and os.name == "nt":
             try:
                 os.startfile(archivo_pdf)
             except Exception:
                 pass
         return archivo_pdf
+
+    # Si existe y force=True, lo borramos para regenerarlo
+    if os.path.exists(archivo_pdf) and force:
+        try:
+            os.remove(archivo_pdf)
+        except Exception:
+            # Si Windows lo tiene abierto, igual intentamos regenerar (puede fallar)
+            pass
 
     # ---------- Estilos base ----------
     styles = getSampleStyleSheet()
@@ -590,4 +599,5 @@ def generar_pdf_factura(factura_id: int, abrir: bool = True) -> str:
         except Exception:
             pass
 
+    actualizar_ruta_pdf_factura_convenio(factura_id, archivo_pdf)
     return archivo_pdf

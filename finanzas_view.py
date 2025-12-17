@@ -8,6 +8,11 @@ from db import (
     eliminar_gasto_financiero,
     registrar_paquete_arriendo,
     resumen_paquetes_arriendo,
+    listar_consumos_paquetes_arriendo,
+    listar_paquetes_arriendo,
+    obtener_paquete_arriendo,
+    actualizar_paquete_arriendo,
+    eliminar_paquete_arriendo,
 )
 
 MESES_NOMBRE = [
@@ -69,50 +74,107 @@ def build_finanzas_view(page: ft.Page) -> ft.Control:
     kpi_particulares = ft.Text("—", size=20, weight=ft.FontWeight.BOLD)
     kpi_convenios = ft.Text("—", size=20, weight=ft.FontWeight.BOLD)
     kpi_gastos = ft.Text("—", size=20, weight=ft.FontWeight.BOLD)
-    kpi_utilidad = ft.Text("—", size=20, weight=ft.FontWeight.BOLD, color=ft.Colors.GREEN)
+    kpi_utilidad = ft.Text("—", size=20, weight=ft.FontWeight.BOLD)
+    kpi_bolsillo = ft.Text("—", size=20, weight=ft.FontWeight.BOLD)
 
-    card_particulares = ft.Card(
-        content=ft.Container(
-            content=ft.Column(
-                [ft.Text("Ingresos particulares", size=12, color=ft.Colors.GREY_700), kpi_particulares],
-                spacing=4,
-            ),
-            padding=12,
-        )
+
+    card_particulares = ft.Container(
+        padding=12,
+        border_radius=14,
+        bgcolor=ft.Colors.WHITE,
+        border=ft.border.all(1, ft.Colors.GREY_300),
+        shadow=ft.BoxShadow(
+            blur_radius=12, 
+            spread_radius=1, 
+            color=ft.Colors.with_opacity(0.08, ft.Colors.BLACK)
+        ),
+        content=ft.Column(
+            [
+                ft.Text("Ingresos particulares", size=12, color=ft.Colors.GREY_700),
+                kpi_particulares,
+            ],
+            spacing=4,
+        ),
     )
 
-    card_convenios = ft.Card(
-        content=ft.Container(
-            content=ft.Column(
-                [ft.Text("Ingresos convenios", size=12, color=ft.Colors.GREY_700), kpi_convenios],
-                spacing=4,
-            ),
-            padding=12,
-        )
+    card_convenios = ft.Container(
+        padding=12,
+        border_radius=14,
+        bgcolor=ft.Colors.WHITE,
+        border=ft.border.all(1, ft.Colors.GREY_300),
+        shadow=ft.BoxShadow(
+            blur_radius=12, 
+            spread_radius=1, 
+            color=ft.Colors.with_opacity(0.08, ft.Colors.BLACK)
+        ),
+        content=ft.Column(
+            [
+                ft.Text("Ingresos convenios", size=12, color=ft.Colors.GREY_700),
+                kpi_convenios,
+            ],
+            spacing=4,
+        ),
     )
 
-    card_gastos = ft.Card(
-        content=ft.Container(
-            content=ft.Column(
-                [ft.Text("Gastos", size=12, color=ft.Colors.GREY_700), kpi_gastos],
-                spacing=4,
-            ),
-            padding=12,
-        )
+    card_gastos = ft.Container(
+        padding=12,
+        border_radius=14,
+        bgcolor=ft.Colors.WHITE,
+        border=ft.border.all(1, ft.Colors.GREY_300),
+        shadow=ft.BoxShadow(
+            blur_radius=12, 
+            spread_radius=1, 
+            color=ft.Colors.with_opacity(0.08, ft.Colors.BLACK)
+        ),
+        content=ft.Column(
+            [
+                ft.Text("Gastos", size=12, color=ft.Colors.GREY_700),
+                kpi_gastos,
+            ],
+            spacing=4,
+        ),
     )
 
-    card_utilidad = ft.Card(
-        content=ft.Container(
-            content=ft.Column(
-                [ft.Text("Utilidad neta", size=12, color=ft.Colors.GREY_700), kpi_utilidad],
-                spacing=4,
-            ),
-            padding=12,
-        )
+    card_utilidad = ft.Container(
+        padding=12,
+        border_radius=14,
+        bgcolor=ft.Colors.WHITE,
+        border=ft.border.all(1, ft.Colors.GREY_300),
+        shadow=ft.BoxShadow(
+            blur_radius=12, 
+            spread_radius=1, 
+            color=ft.Colors.with_opacity(0.08, ft.Colors.BLACK)
+        ),
+        content=ft.Column(
+            [
+                ft.Text("Utilidad neta", size=12, color=ft.Colors.GREY_700),
+                kpi_utilidad,
+            ],
+            spacing=4,
+        ),
+    )
+    
+    card_bolsillo = ft.Container(
+        padding=12,
+        border_radius=14,
+        bgcolor=ft.Colors.WHITE,
+        border=ft.border.all(1, ft.Colors.GREY_300),
+        shadow=ft.BoxShadow(
+            blur_radius=12, 
+            spread_radius=1, 
+            color=ft.Colors.with_opacity(0.08, ft.Colors.BLACK)
+        ),
+        content=ft.Column(
+            [
+                ft.Text("Bolsillo próximo paquete", size=12, color=ft.Colors.GREY_700),
+                kpi_bolsillo,
+            ],
+            spacing=4,
+        ),
     )
 
     fila_kpis = ft.Row(
-        [card_particulares, card_convenios, card_gastos, card_utilidad],
+        [card_particulares, card_convenios, card_gastos, card_utilidad, card_bolsillo],
         spacing=12,
         wrap=True,
     )
@@ -150,6 +212,23 @@ def build_finanzas_view(page: ft.Page) -> ft.Control:
         rows=[],
         column_spacing=16,
     )
+    
+    tabla_consumos_paquete = ft.DataTable(
+        columns=[
+            ft.DataColumn(ft.Text("Fecha")),
+            ft.DataColumn(ft.Text("Cita")),
+            ft.DataColumn(ft.Text("Paciente")),
+            ft.DataColumn(ft.Text("Valor (promedio)")),
+            ft.DataColumn(ft.Text("Consumido por")),
+        ],
+        rows=[],
+    )   
+    
+    # Labels de “no hay datos” para cada tabla
+    lbl_empty_gastos = ft.Text("", size=12, color=ft.Colors.GREY_600)
+    lbl_empty_consumos = ft.Text("", size=12, color=ft.Colors.GREY_600)
+    lbl_empty_facturas = ft.Text("", size=12, color=ft.Colors.GREY_600)
+    lbl_empty_paquetes = ft.Text("", size=12, color=ft.Colors.GREY_600)
 
     # ----------------- FORMULARIO DE GASTOS -----------------
 
@@ -212,7 +291,6 @@ def build_finanzas_view(page: ft.Page) -> ft.Control:
 
     dd_tipo_gasto = ft.Dropdown(
         label="Tipo",
-        value="arriendo_consultorio",
         width=200,
         options=[
             ft.dropdown.Option("carro", "Carro"),
@@ -224,7 +302,35 @@ def build_finanzas_view(page: ft.Page) -> ft.Control:
     txt_descripcion_gasto = ft.TextField(label="Descripción", width=260)
     txt_monto_gasto = ft.TextField(label="Monto", width=140)
     lbl_mensaje_gasto = ft.Text("", color=ft.Colors.RED_400, size=12)
+    
+    # Validación del formulario de gasto
+    def _validar_form_gasto(_=None):
+        # tipo debe existir
+        tipo_ok = bool(dd_tipo_gasto.value)
 
+        # monto numérico y > 0
+        try:
+            monto = float((txt_monto_gasto.value or "").strip() or "0")
+        except ValueError:
+            monto = 0
+
+        monto_ok = monto > 0
+
+        btn_registrar_gasto.disabled = not (tipo_ok and monto_ok)
+        page.update()
+
+    
+    # Limpiar mensaje de error al cambiar cualquier campo
+    def _limpiar_msg_gasto(_=None):
+        if lbl_mensaje_gasto.value:
+            lbl_mensaje_gasto.value = ""
+            page.update()
+            
+    dd_tipo_gasto.on_change = lambda e: (_limpiar_msg_gasto(), _validar_form_gasto())
+    txt_monto_gasto.on_change = lambda e: (_limpiar_msg_gasto(), _validar_form_gasto())
+    txt_descripcion_gasto.on_change = _limpiar_msg_gasto
+
+    
     def _registrar_gasto(e):
         lbl_mensaje_gasto.value = ""
         page.update()
@@ -254,13 +360,17 @@ def build_finanzas_view(page: ft.Page) -> ft.Control:
                     "monto": monto,
                 }
             )
+            lbl_mensaje_gasto.value = "✅ Gasto registrado"
+            lbl_mensaje_gasto.color = ft.Colors.GREEN
         except Exception as ex:
             lbl_mensaje_gasto.value = f"Error al guardar el gasto: {ex}"
+            lbl_mensaje_gasto.color = ft.Colors.RED_400
             page.update()
             return
 
         # limpiar campos
         txt_fecha_gasto.value = date.today().isoformat()
+        dd_tipo_gasto.value = None
         txt_descripcion_gasto.value = ""
         txt_monto_gasto.value = ""
 
@@ -271,12 +381,15 @@ def build_finanzas_view(page: ft.Page) -> ft.Control:
         page.snack_bar.open = True
 
         _cargar_resumen()
+        _validar_form_gasto()
+        txt_monto_gasto.focus()
         page.update()
 
     btn_registrar_gasto = ft.ElevatedButton(
         text="Registrar gasto",
         icon=ft.Icons.SAVE,
         on_click=_registrar_gasto,
+        disabled=True,
     )
 
     formulario_gasto = ft.Column(
@@ -311,7 +424,7 @@ def build_finanzas_view(page: ft.Page) -> ft.Control:
         read_only=True,
     )
 
-        # ---- DatePicker para fecha de compra del paquete ----
+    # ---- DatePicker para fecha de compra del paquete ----
     datepicker_paquete = ft.DatePicker(
         help_text="Selecciona la fecha del paquete",
         first_date=datetime(2020, 1, 1),
@@ -352,7 +465,6 @@ def build_finanzas_view(page: ft.Page) -> ft.Control:
     )
 
 
-
     txt_cantidad_citas = ft.TextField(
         label="# citas en paquete",
         width=150,
@@ -365,15 +477,57 @@ def build_finanzas_view(page: ft.Page) -> ft.Control:
         label="Descripción / referencia",
         width=260,
     )
-    lbl_mensaje_paquete = ft.Text("", color=ft.Colors.RED_400, size=12)
+    
+    paquete_edit = {"id": None}  # mutable
 
+    tabla_paquetes = ft.DataTable(
+        columns=[
+            ft.DataColumn(ft.Text("Fecha")),
+            ft.DataColumn(ft.Text("Citas")),
+            ft.DataColumn(ft.Text("Usadas")),
+            ft.DataColumn(ft.Text("Disp.")),
+            ft.DataColumn(ft.Text("Costo")),
+            ft.DataColumn(ft.Text("Notas")),
+            ft.DataColumn(ft.Text("Acciones")),
+        ],
+        rows=[],
+    )
+
+    lbl_mensaje_paquete = ft.Text("", color=ft.Colors.RED_400, size=12)
+    
+    def _validar_form_paquete(_=None):
+        # cantidad: int > 0
+        try:
+            cantidad = int((txt_cantidad_citas.value or "").strip() or "0")
+        except ValueError:
+            cantidad = 0
+
+        # costo: float > 0
+        try:
+            costo = float((txt_costo_paquete.value or "").strip() or "0")
+        except ValueError:
+            costo = 0.0
+
+        btn_registrar_paquete.disabled = not (cantidad > 0 and costo > 0)
+        page.update()
+        
+    # Limpiar mensaje de error al cambiar cualquier campo    
+    def _limpiar_msg_paquete(_=None):
+        if lbl_mensaje_paquete.value:
+            lbl_mensaje_paquete.value = ""
+            page.update()
+        
+    txt_cantidad_citas.on_change = lambda e: (_limpiar_msg_paquete(), _validar_form_paquete())
+    txt_costo_paquete.on_change = lambda e: (_limpiar_msg_paquete(), _validar_form_paquete())
+    txt_descripcion_paquete.on_change = _limpiar_msg_paquete
+        
     # labels de resumen de paquetes
     lbl_paq_resumen = ft.Text("", size=13, color=ft.Colors.GREY_800)
     lbl_paq_detalle = ft.Text("", size=12, color=ft.Colors.GREY_700)
 
     def _cargar_resumen_paquetes():
         try:
-            info = resumen_paquetes_arriendo() or {}
+            info = resumen_paquetes_arriendo(solo_activos=True) or {}
         except Exception as ex:
             lbl_paq_resumen.value = f"Error al cargar paquetes: {ex}"
             lbl_paq_detalle.value = ""
@@ -385,7 +539,7 @@ def build_finanzas_view(page: ft.Page) -> ft.Control:
         citas_disponibles = int(info.get("citas_disponibles", 0) or 0)
         costo_total = float(info.get("costo_total", 0) or 0)
 
-        if total_citas <= 0:
+        if total_citas <= 0 or citas_disponibles <= 0:
             lbl_paq_resumen.value = "No hay paquetes de arriendo registrados."
             lbl_paq_detalle.value = ""
         else:
@@ -399,6 +553,89 @@ def build_finanzas_view(page: ft.Page) -> ft.Control:
                 f"· Costo promedio por cita: {_fmt(costo_promedio)}"
             )
 
+        page.update()
+        
+    def _cargar_tabla_paquetes():
+        tabla_paquetes.rows = []
+
+        try:
+            paquetes = listar_paquetes_arriendo(solo_activos=True) or []
+        except Exception as ex:
+            # si quieres, puedes mostrarlo en lbl_mensaje_paquete
+            lbl_mensaje_paquete.value = f"Error al listar paquetes: {ex}"
+            lbl_mensaje_paquete.color = ft.Colors.RED_400
+            page.update()
+            return
+
+        for p in paquetes:
+            pid = int(p.get("id") or 0)
+
+            def _on_edit(ev, _pid=pid):
+                info = obtener_paquete_arriendo(_pid)
+                if not info:
+                    return
+
+                paquete_edit["id"] = _pid
+                txt_fecha_paquete.value = info.get("fecha_compra") or date.today().isoformat()
+                txt_cantidad_citas.value = str(info.get("cantidad_citas") or "")
+                txt_costo_paquete.value = str(info.get("costo_total") or "")
+                txt_descripcion_paquete.value = info.get("notas") or ""
+
+                btn_registrar_paquete.text = "Guardar cambios"
+                btn_cancelar_edicion.visible = True
+                _validar_form_paquete()
+                page.update()
+
+            def _on_delete(ev, _pid=pid):
+                try:
+                    eliminar_paquete_arriendo(_pid)
+                except Exception as ex:
+                    page.snack_bar = ft.SnackBar(
+                        content=ft.Text(f"Error al eliminar paquete: {ex}"),
+                        bgcolor=ft.Colors.RED_200,
+                    )
+                    page.snack_bar.open = True
+                    page.update()
+                    return
+
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text("Paquete eliminado."),
+                    bgcolor=ft.Colors.GREEN_300,
+                )
+                page.snack_bar.open = True
+
+                # refrescar todo lo que depende de paquetes
+                _cargar_resumen_paquetes()
+                _cargar_tabla_paquetes()
+                _cargar_resumen()  # también recalcula KPI bolsillo y gastos (paquetes suman a gastos)
+                page.update()
+
+            disponibles = int(p.get("cantidad_citas", 0) or 0) - int(p.get("citas_usadas", 0) or 0)
+
+            tabla_paquetes.rows.append(
+                ft.DataRow(
+                    cells=[
+                        ft.DataCell(ft.Text(p.get("fecha_compra", ""))),
+                        ft.DataCell(ft.Text(str(p.get("cantidad_citas", "")))),
+                        ft.DataCell(ft.Text(str(p.get("citas_usadas", "")))),
+                        ft.DataCell(ft.Text(str(disponibles))),
+                        ft.DataCell(ft.Text(_fmt(float(p.get("costo_total", 0) or 0)))),
+                        ft.DataCell(ft.Text((p.get("notas", "") or "")[:30])),
+                        ft.DataCell(
+                            ft.Row(
+                                [
+                                    ft.IconButton(icon=ft.Icons.EDIT, tooltip="Editar", on_click=_on_edit),
+                                    ft.IconButton(icon=ft.Icons.DELETE, tooltip="Eliminar", on_click=_on_delete),
+                                ],
+                                spacing=0,
+                            )
+                        ),
+                    ]
+                )
+            )
+        hay_paquetes = len(tabla_paquetes.rows) > 0
+        tabla_paquetes_container.visible = hay_paquetes
+        lbl_empty_paquetes.value = "" if hay_paquetes else "Aún no hay paquetes registrados."
         page.update()
 
     def _registrar_paquete(e):
@@ -443,17 +680,31 @@ def build_finanzas_view(page: ft.Page) -> ft.Control:
 
         descripcion = (txt_descripcion_paquete.value or "").strip()
 
+        payload = {
+            "fecha_compra": fecha_compra,
+            "cantidad_citas": cantidad,
+            "precio_total": costo,
+            "descripcion": descripcion,
+        }
+
         try:
-            registrar_paquete_arriendo(
-                {
-                    "fecha_compra": fecha_compra,
-                    "cantidad_citas": cantidad,
-                    "precio_total": costo,
-                    "descripcion": descripcion,
-                }
-            )
+            if paquete_edit["id"] is None:
+                registrar_paquete_arriendo(payload)
+                lbl_mensaje_paquete.value = "✅ Paquete registrado"
+            else:
+                actualizar_paquete_arriendo(paquete_edit["id"], payload)
+                lbl_mensaje_paquete.value = "✅ Paquete actualizado"
+
+                # salir del modo edición
+                paquete_edit["id"] = None
+                btn_registrar_paquete.text = "Registrar paquete"
+                btn_cancelar_edicion.visible = False
+
+            lbl_mensaje_paquete.color = ft.Colors.GREEN
+
         except Exception as ex:
-            lbl_mensaje_paquete.value = f"Error al registrar paquete: {ex}"
+            lbl_mensaje_paquete.value = f"Error al guardar paquete: {ex}"
+            lbl_mensaje_paquete.color = ft.Colors.RED_400
             page.update()
             return
 
@@ -471,13 +722,32 @@ def build_finanzas_view(page: ft.Page) -> ft.Control:
 
         _cargar_resumen_paquetes()
         _cargar_resumen()
+        _cargar_tabla_paquetes()
+        _validar_form_paquete()
+        txt_cantidad_citas.focus()
         page.update()
 
     btn_registrar_paquete = ft.ElevatedButton(
         text="Registrar paquete",
         icon=ft.Icons.SAVE,
         on_click=_registrar_paquete,
+        disabled=True,
     )
+    
+    btn_cancelar_edicion = ft.TextButton("Cancelar edición", visible=False)
+
+    def _cancelar_edicion_paquete(e):
+        paquete_edit["id"] = None
+        btn_registrar_paquete.text = "Registrar paquete"
+        btn_cancelar_edicion.visible = False
+        txt_fecha_paquete.value = date.today().isoformat()
+        txt_cantidad_citas.value = ""
+        txt_costo_paquete.value = ""
+        txt_descripcion_paquete.value = ""
+        _validar_form_paquete()
+        page.update()
+
+    btn_cancelar_edicion.on_click = _cancelar_edicion_paquete
 
     seccion_paquetes = ft.Column(
         [
@@ -509,6 +779,8 @@ def build_finanzas_view(page: ft.Page) -> ft.Control:
         ],
         spacing=6,
     )
+    
+    
 
     # ----------------- LÓGICA DE CARGA DE RESUMEN -----------------
 
@@ -540,6 +812,8 @@ def build_finanzas_view(page: ft.Page) -> ft.Control:
         ingresos = data.get("ingresos", {}) or {}
         gastos = data.get("gastos", {}) or {}
         utilidad = data.get("utilidad", {}) or {}
+        kpis = data.get("kpis", {}) or {}
+        bolsillo = float(kpis.get("bolsillo_proximo_paquete", 0) or 0)
 
         citas = ingresos.get("citas", {}) or {}
         convenios = ingresos.get("convenios", {}) or {}
@@ -575,6 +849,25 @@ def build_finanzas_view(page: ft.Page) -> ft.Control:
         kpi_convenios.value = _fmt(total_facturas_pagadas)
         kpi_gastos.value = _fmt(total_gastos)
         kpi_utilidad.value = _fmt(neta_cobrada)
+        kpi_bolsillo.value = _fmt(bolsillo)
+        
+        # ----------------- COLORES DINÁMICOS KPIs -----------------
+
+        # Gastos: 0 gris, >0 rojo
+        kpi_gastos.color = ft.Colors.GREY if total_gastos <= 0 else ft.Colors.RED
+
+        # Utilidad: >0 verde, =0 gris, <0 rojo
+        if neta_cobrada > 0:
+            kpi_utilidad.color = ft.Colors.GREEN
+        elif neta_cobrada < 0:
+            kpi_utilidad.color = ft.Colors.RED
+        else:
+            kpi_utilidad.color = ft.Colors.GREY
+
+        # Bolsillo: 0 gris, >0 azul (informativo, no “malo”)
+        kpi_bolsillo.color = ft.Colors.GREY if bolsillo <= 0 else ft.Colors.BLUE
+        
+        # ----------------- FIN COLORES -----------------
 
         # Tabla ingresos
         tabla_ingresos.rows = [
@@ -611,6 +904,12 @@ def build_finanzas_view(page: ft.Page) -> ft.Control:
                 ]
             ),
         ]
+        
+        # Empty state: facturas
+        if (cantidad_facturas_pagadas + cantidad_facturas_pendientes) == 0:
+            lbl_empty_facturas.value = "No hay facturas de convenio en este período."
+        else:
+            lbl_empty_facturas.value = ""
 
         # Tabla gastos (detalle)
         # rango del mes: del 1 al último día
@@ -619,6 +918,36 @@ def build_finanzas_view(page: ft.Page) -> ft.Control:
             fecha_hasta = f"{anio}-12-31"
         else:
             fecha_hasta = f"{anio}-{mes+1:02d}-01"
+            
+            
+        # ----------------- TABLA CONSUMOS DE PAQUETES -----------------
+
+        try:
+            consumos = listar_consumos_paquetes_arriendo(fecha_desde, fecha_hasta)
+        except Exception as ex:
+            consumos = []
+            print(f"[WARN] Error al cargar consumos de paquetes: {ex}")
+
+        tabla_consumos_paquete.rows = []
+
+        for i, c in enumerate(consumos, start=1):
+            tabla_consumos_paquete.rows.append(
+                ft.DataRow(
+                    cells=[
+                        ft.DataCell(ft.Text(c.get("fecha_consumo", ""))),
+                        ft.DataCell(ft.Text(f"#{i}")),  # <- consumo #N (re-numera)
+                        ft.DataCell(ft.Text(c.get("paciente_nombre", ""))),
+                        ft.DataCell(ft.Text(_fmt(c.get("costo_promedio_cita", 0)))),
+                        ft.DataCell(ft.Text(c.get("consumido_por") or "agenda")),
+                    ]
+                )
+            )
+        
+        # Empty state: consumos
+        if len(tabla_consumos_paquete.rows) == 0:
+            lbl_empty_consumos.value = "Aún no hay consumos de paquete en este período."
+        else:
+            lbl_empty_consumos.value = ""
 
         try:
             gastos_lista = listar_gastos_financieros(
@@ -682,11 +1011,22 @@ def build_finanzas_view(page: ft.Page) -> ft.Control:
             )
 
         tabla_gastos.rows = filas_gastos
+        
+        hay_gastos = len(tabla_gastos.rows) > 0
+        tabla_gastos_container.visible = hay_gastos
+        lbl_empty_gastos.value = "" if hay_gastos else "Aún no hay gastos registrados en este período."
+        
+        # Empty state: gastos
+        if len(tabla_gastos.rows) == 0:
+            lbl_empty_gastos.value = "Aún no hay gastos registrados en este período."
+        else:
+            lbl_empty_gastos.value = ""
 
         # actualizar resumen de paquetes también (porque afectan la lectura mental de Sara)
         _cargar_resumen_paquetes()
 
         page.update()
+        
 
     # Eventos de cambio de filtros
     def _on_cambio_filtros(e):
@@ -694,10 +1034,31 @@ def build_finanzas_view(page: ft.Page) -> ft.Control:
 
     dd_anio.on_change = _on_cambio_filtros
     dd_mes.on_change = _on_cambio_filtros
+    
+    # ======= Contenedores con scroll para tablas ==========
+    #  Tabla gastos con contenedor scroll
+    tabla_gastos_container = ft.Container(
+        content=ft.Column([tabla_gastos], scroll=ft.ScrollMode.AUTO, expand=True),
+        height=260,
+        visible=False,
+    )
+
+    # Tabla consumos de paquetes con contenedor scroll
+    tabla_consumos_container = ft.Container(
+        content=ft.Column([tabla_consumos_paquete], scroll=ft.ScrollMode.AUTO, expand=True),
+        height=220,
+    )
+    
+    tabla_paquetes_container = ft.Container(
+        content=ft.Column([tabla_paquetes], scroll=ft.ScrollMode.AUTO, expand=True),
+        height=220,
+    )
+    
 
     # Cargar datos iniciales
     _cargar_resumen()
     _cargar_resumen_paquetes()
+    _cargar_tabla_paquetes()
 
     # ----------------- LAYOUT GENERAL -----------------
 
@@ -708,20 +1069,59 @@ def build_finanzas_view(page: ft.Page) -> ft.Control:
         ],
         spacing=12,
     )
+    
 
-    tablas_column = ft.Column(
+    # ---- Bloque superior: Ingresos + Facturas (2 columnas) ----
+    bloque_ingresos_facturas = ft.Row(
         [
-            ft.Text("Ingresos", size=16, weight=ft.FontWeight.BOLD),
-            tabla_ingresos,
-            ft.Container(height=12),
-            ft.Text("Facturas de convenio", size=16, weight=ft.FontWeight.BOLD),
-            tabla_facturas,
-            ft.Container(height=12),
-            ft.Text("Gastos detallados", size=16, weight=ft.FontWeight.BOLD),
-            tabla_gastos,
+            ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Text("Ingresos", size=16, weight=ft.FontWeight.BOLD),
+                        tabla_ingresos,
+                    ],
+                    spacing=8,
+                ),
+                width=450,  # <- clave: controla el ancho real
+            ),
+            ft.Container(width=12),  # separador “real” (espacio)
+            ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Text("Facturas de convenio", size=16, weight=ft.FontWeight.BOLD),
+                        tabla_facturas,
+                        lbl_empty_facturas,
+                    ],
+                    spacing=8,
+                ),
+                width=450,  # <- clave
+            ),
         ],
-        spacing=8,
+        spacing=0,  # ya controlamos el espacio con el container intermedio
+        tight=True,  # <- clave: el Row se ajusta al contenido, no reparte toda la pantalla
+        vertical_alignment=ft.CrossAxisAlignment.START,
     )
+    
+    # ======= Contenedores con scroll para tablas ==========
+    
+    
+    
+    def seccion_card(titulo: str, cuerpo: ft.Control) -> ft.Control:
+        return ft.Container(
+            content=ft.Column(
+                [
+                    ft.Text(titulo, size=16, weight=ft.FontWeight.BOLD),
+                    ft.Container(height=6),
+                    cuerpo,
+                ],
+                spacing=8,
+            ),
+            padding=14,
+            border_radius=14,
+            border=ft.border.all(1, ft.Colors.GREY_300),
+            bgcolor=ft.Colors.WHITE,
+            shadow=ft.BoxShadow(blur_radius=12, spread_radius=1, color=ft.Colors.with_opacity(0.08, ft.Colors.BLACK)),
+        )
 
     contenido = ft.Column(
         [
@@ -730,16 +1130,50 @@ def build_finanzas_view(page: ft.Page) -> ft.Control:
             filtros_row,
             ft.Container(height=8),
             fila_kpis,
-            ft.Container(height=16),
-            tablas_column,
-            ft.Container(height=16),
-            formulario_gasto,
-            ft.Container(height=16),
-            seccion_paquetes,
+            ft.Container(height=12),
+
+            # ✅ INGRESOS (card)
+            seccion_card("Ingresos", bloque_ingresos_facturas),
+            ft.Container(height=12),
+
+            # ✅ GASTOS (card)
+            seccion_card(
+                "Gastos",
+                ft.Column(
+                    [
+                        formulario_gasto,
+                        ft.Container(height=10),
+                        ft.Text("Gastos detallados", size=14, weight=ft.FontWeight.BOLD),
+                        lbl_empty_gastos,
+                        tabla_gastos_container,
+                    ],
+                    spacing=10,
+                ),
+            ),
+            ft.Container(height=12),
+
+            # ✅ PAQUETES (card)
+            seccion_card(
+                "Paquetes de consultorio",
+                ft.Column(
+                    [
+                        seccion_paquetes,
+                        ft.Container(height=8),
+                        ft.Text("Paquetes registrados", size=14, weight=ft.FontWeight.BOLD),
+                        lbl_empty_paquetes,
+                        tabla_paquetes_container,
+                        ft.Container(height=8),
+                        ft.Text("Consumos del paquete (informativo)", size=14, weight=ft.FontWeight.BOLD),
+                        tabla_consumos_container,
+                        lbl_empty_consumos,
+                    ],
+                    spacing=10,
+                ),
+            ),
         ],
         spacing=10,
         scroll=ft.ScrollMode.ALWAYS,
-    )
+    )  
 
     return ft.Container(
         content=contenido,

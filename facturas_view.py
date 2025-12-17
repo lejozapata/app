@@ -296,7 +296,7 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
     def _generar_pdf_desde_ui(factura_id: int):
         """Llama a generar_pdf_factura con el ID de la factura."""
         try:
-            ruta = generar_pdf_factura(factura_id, abrir=True)
+            ruta = generar_pdf_factura(factura_id, abrir=True, force=True)
             page.snack_bar = ft.SnackBar(
                 content=ft.Text(f"PDF generado: {os.path.basename(ruta)}"),
                 bgcolor=ft.Colors.GREEN_300,
@@ -312,12 +312,15 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
             page.update()
 
 
-    def _marcar_factura_pagada(factura_id: int):
+    def _toggle_estado_factura(factura_id: int, estado_actual: str):
         """
-        Cambia el estado de la factura a 'pagada' y recarga la tabla.
+        Toggle:
+        - pendiente -> pagada
+        - pagada -> pendiente
         """
+        nuevo = "pendiente" if (estado_actual == "pagada") else "pagada"
         try:
-            actualizar_estado_factura_convenio(factura_id, "pagada")
+            actualizar_estado_factura_convenio(factura_id, nuevo)
         except Exception as ex:
             page.snack_bar = ft.SnackBar(
                 content=ft.Text(f"Error al actualizar factura: {ex}"),
@@ -326,7 +329,7 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
             page.snack_bar.open = True
             page.update()
             return
-    
+
         _cargar_facturas()
 
     def _cargar_facturas():
@@ -361,15 +364,15 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
             # Botón para marcar como pagada (deshabilitado si ya está pagada)
             if estado == "pagada":
                 btn_pagada = ft.IconButton(
-                    icon=ft.Icons.CHECK_CIRCLE,
-                    tooltip="Factura pagada",
-                    disabled=True,
+                    icon=ft.Icons.UNDO,
+                    tooltip="Volver a pendiente",
+                    on_click=lambda e, fid=fid, est=estado: _toggle_estado_factura(fid, est),
                 )
             else:
                 btn_pagada = ft.IconButton(
                     icon=ft.Icons.CHECK_CIRCLE,
                     tooltip="Marcar como pagada",
-                    on_click=lambda e, fid=fid: _marcar_factura_pagada(fid),
+                    on_click=lambda e, fid=fid, est=estado: _toggle_estado_factura(fid, est),
                 )
 
             acciones = ft.Row(

@@ -22,6 +22,8 @@ ESTADOS_CITA: Dict[str, str] = {
     "no_asistio": "No asistió",
 }
 
+
+
 # --------------------------------------------------------------
 
 
@@ -352,6 +354,31 @@ def init_db() -> None:
         );
         """
     )
+    
+    # Tabla de consumo de paquetes de arriendo
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS consumo_paquetes_arriendo (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        paquete_id INTEGER NOT NULL,
+        cita_id INTEGER NOT NULL UNIQUE,
+        fecha_consumo TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now','localtime')),
+        consumido_por TEXT,
+        FOREIGN KEY(paquete_id) REFERENCES paquetes_arriendo(id) ON DELETE CASCADE,
+        FOREIGN KEY(cita_id) REFERENCES citas(id) ON DELETE CASCADE
+    );
+    """)
+
+    # Índices (van aparte)
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS ix_consumo_paquetes_arriendo_fecha
+    ON consumo_paquetes_arriendo (fecha_consumo);
+    """)
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS ix_consumo_paquetes_arriendo_paquete
+    ON consumo_paquetes_arriendo (paquete_id);
+    """)
+    
     
 
     # Tabla de paquetes de consultorio (sesiones prepagadas)
@@ -1837,6 +1864,20 @@ def obtener_factura_convenio(factura_id: int) -> Optional[Dict[str, Any]]:
         "encabezado": dict(enc),
         "detalles": [dict(d) for d in det_rows],
     }
+    
+def actualizar_ruta_pdf_factura_convenio(factura_id: int, ruta_pdf: str) -> None:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE facturas_convenio
+        SET ruta_pdf = ?, actualizada_en = datetime('now','localtime')
+        WHERE id = ?;
+        """,
+        (ruta_pdf, factura_id),
+    )
+    conn.commit()
+    conn.close()
 
 
 def listar_facturas_convenio(
@@ -2052,33 +2093,34 @@ def resumen_financiero_periodo(fecha_desde: str, fecha_hasta: str) -> Dict[str, 
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
-    # ---- Ingresos por citas particulares (virtual/presencial) ----
+    # ---- Ingresos por citas particulares (virtual/presencial) pagadas ----
     cur.execute(
         """
         SELECT
-            modalidad,
+            canal,
             COUNT(*) AS cantidad,
             COALESCE(SUM(precio), 0) AS total
         FROM citas
         WHERE pagado = 1
-          AND modalidad IN ('presencial', 'virtual')
-          AND date(fecha_hora) BETWEEN date(?) AND date(?)
-        GROUP BY modalidad;
+        AND modalidad = 'particular'
+        AND canal IN ('presencial', 'virtual')
+        AND date(fecha_hora) BETWEEN date(?) AND date(?)
+        GROUP BY canal;
         """,
         (fecha_desde, fecha_hasta),
     )
     filas_citas = cur.fetchall()
 
-    ingresos_citas: Dict[str, Dict[str, Any]] = {
+    ingresos_citas = {
         "presencial": {"cantidad": 0, "total": 0.0},
         "virtual": {"cantidad": 0, "total": 0.0},
     }
 
     for r in filas_citas:
-        mod = r["modalidad"]
-        if mod in ingresos_citas:
-            ingresos_citas[mod]["cantidad"] = int(r["cantidad"] or 0)
-            ingresos_citas[mod]["total"] = float(r["total"] or 0)
+        ch = r["canal"]
+        if ch in ingresos_citas:
+            ingresos_citas[ch]["cantidad"] = int(r["cantidad"] or 0)
+            ingresos_citas[ch]["total"] = float(r["total"] or 0)
 
     # ---- Conteo de citas de convenio (solo conteo, no valor económico) ----
     cur.execute(
@@ -2119,14 +2161,19 @@ def resumen_financiero_periodo(fecha_desde: str, fecha_hasta: str) -> Dict[str, 
         cantidad = int(r["cantidad"] or 0)
         total = float(r["total"] or 0)
 
-        facturas_por_estado[estado] = {
-            "cantidad": cantidad,
-            "total": total,
-        }
-
+        facturas_por_estado[estado] = {"cantidad": cantidad, "total": total}
         total_facturas_emitidas += total
         if estado == "pagada":
             total_facturas_pagadas += total
+
+    # Defaults (después del loop)
+    facturas_por_estado.setdefault("pagada", {"cantidad": 0, "total": 0.0})
+    facturas_por_estado.setdefault("pendiente", {"cantidad": 0, "total": 0.0})
+
+    cantidad_facturas_pagadas = int(facturas_por_estado["pagada"]["cantidad"] or 0)
+    cantidad_facturas_pendientes = int(facturas_por_estado["pendiente"]["cantidad"] or 0)
+    total_facturas_pendientes = float(facturas_por_estado["pendiente"]["total"] or 0)
+    cantidad_facturas_emitidas = sum(int(v.get("cantidad") or 0) for v in facturas_por_estado.values())
 
     # ---- Gastos financieros ----
     cur.execute(
@@ -2142,6 +2189,67 @@ def resumen_financiero_periodo(fecha_desde: str, fecha_hasta: str) -> Dict[str, 
     )
     filas_gastos = cur.fetchall()
     conn.close()
+    
+     # ---- Paquetes de consultorio comprados (se consideran GASTO) ----
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT
+            COUNT(*) AS cantidad,
+            COALESCE(SUM(precio_total), 0) AS total
+        FROM paquetes_consultorio
+        WHERE date(fecha_compra) BETWEEN date(?) AND date(?);
+        """,
+        (fecha_desde, fecha_hasta),
+    )
+    row_pkg = cur.fetchone()
+    
+    cur.execute(
+        """
+        SELECT COALESCE(SUM(costo_total), 0) AS total
+        FROM paquetes_arriendo
+        WHERE date(fecha_compra) BETWEEN date(?) AND date(?);
+        """,
+        (fecha_desde, fecha_hasta),
+    )
+    row_paq = cur.fetchone()
+    total_paquetes_arriendo = float((row_paq["total"] if row_paq else 0) or 0)
+    
+    conn.close()
+    
+    # ---- KPI Bolsillo próximo paquete (consumo de citas de paquetes) ----
+    # Se calcula como la suma del costo promedio por cita de cada consumo registrado
+    # (NO afecta utilidad neta; es informativo).
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT
+            COUNT(*) AS cantidad_consumos,
+            COALESCE(SUM(
+                CASE
+                    WHEN p.cantidad_citas > 0 THEN (p.costo_total * 1.0 / p.cantidad_citas)
+                    ELSE 0
+                END
+            ), 0) AS bolsillo_total
+        FROM consumo_paquetes_arriendo c
+        JOIN paquetes_arriendo p ON p.id = c.paquete_id
+        WHERE date(c.fecha_consumo) BETWEEN date(?) AND date(?);
+        """,
+        (fecha_desde, fecha_hasta),
+    )
+    row_bolsillo = cur.fetchone()
+    conn.close()
+
+    bolsillo_proximo_paquete = float((row_bolsillo["bolsillo_total"] if row_bolsillo else 0) or 0)
+    cantidad_consumos_paquete = int((row_bolsillo["cantidad_consumos"] if row_bolsillo else 0) or 0)
+
+    total_paquetes = float((row_pkg["total"] if row_pkg else 0) or 0)
 
     gastos_por_tipo: Dict[str, float] = {}
     total_gastos = 0.0
@@ -2151,6 +2259,15 @@ def resumen_financiero_periodo(fecha_desde: str, fecha_hasta: str) -> Dict[str, 
         total = float(r["total"] or 0)
         gastos_por_tipo[tipo] = total
         total_gastos += total
+        
+    # Agregar paquetes de consultorio como gasto
+    if total_paquetes > 0:
+        gastos_por_tipo["paquetes_consultorio"] = total_paquetes
+        total_gastos += total_paquetes
+        
+    if total_paquetes_arriendo > 0:
+        gastos_por_tipo["paquetes_arriendo"] = total_paquetes_arriendo
+        total_gastos += total_paquetes_arriendo
 
     total_presencial = ingresos_citas["presencial"]["total"]
     total_virtual = ingresos_citas["virtual"]["total"]
@@ -2161,6 +2278,8 @@ def resumen_financiero_periodo(fecha_desde: str, fecha_hasta: str) -> Dict[str, 
 
     utilidad_neta_cobrada = total_ingresos_cobrados - total_gastos
     utilidad_neta_facturada = total_ingresos_facturados - total_gastos
+    
+    
 
     return {
         "rango": {
@@ -2172,12 +2291,20 @@ def resumen_financiero_periodo(fecha_desde: str, fecha_hasta: str) -> Dict[str, 
                 "presencial": ingresos_citas["presencial"],
                 "virtual": ingresos_citas["virtual"],
                 "total_particulares": total_citas_particulares,
+                "cantidad_citas_pagadas": int(
+                    ingresos_citas["presencial"]["cantidad"] + ingresos_citas["virtual"]["cantidad"]
+                ),
             },
             "convenios": {
                 "cantidad_citas": cantidad_citas_convenio,
                 "facturas_por_estado": facturas_por_estado,
                 "total_facturas_emitidas": total_facturas_emitidas,
                 "total_facturas_pagadas": total_facturas_pagadas,
+                
+                "cantidad_facturas_emitidas": cantidad_facturas_emitidas,
+                "cantidad_facturas_pagadas": cantidad_facturas_pagadas,
+                "cantidad_facturas_pendientes": cantidad_facturas_pendientes,
+                "total_facturas_pendientes": total_facturas_pendientes,
             },
             "total_cobrado": total_ingresos_cobrados,
             "total_facturado": total_ingresos_facturados,
@@ -2189,6 +2316,10 @@ def resumen_financiero_periodo(fecha_desde: str, fecha_hasta: str) -> Dict[str, 
         "utilidad": {
             "neta_cobrada": utilidad_neta_cobrada,
             "neta_facturada": utilidad_neta_facturada,
+        },
+        "kpis": {
+            "bolsillo_proximo_paquete": bolsillo_proximo_paquete,
+            "citas_consumidas_de_paquete": cantidad_consumos_paquete,
         },
     }
 
@@ -2251,7 +2382,7 @@ def _rango_mes(anio: int, mes: int) -> Dict[str, str]:
     }
 
 
-def resumen_financiero_mensual(anio: int, mes: int) -> Dict[str, Any]:
+def resumen_financiero_mensual_legacy(anio: int, mes: int) -> Dict[str, Any]:
     """
     Calcula el resumen financiero del mes usando el modelo ACTUAL:
 
@@ -2281,14 +2412,16 @@ def resumen_financiero_mensual(anio: int, mes: int) -> Dict[str, Any]:
     # ----- Citas particulares pagadas (virtual + presencial) -----
     cur.execute(
         """
-        SELECT modalidad,
-               COUNT(*)            AS cantidad,
-               IFNULL(SUM(precio), 0) AS total
+        SELECT
+            canal,
+            COUNT(*) AS cantidad,
+            IFNULL(SUM(precio), 0) AS total
         FROM citas
         WHERE date(fecha_hora) BETWEEN ? AND ?
-          AND pagado = 1
-          AND modalidad IN ('virtual', 'presencial')
-        GROUP BY modalidad;
+        AND pagado = 1
+        AND modalidad = 'particular'
+        AND canal IN ('presencial', 'virtual')
+        GROUP BY canal;
         """,
         (f_desde, f_hasta),
     )
@@ -2298,15 +2431,19 @@ def resumen_financiero_mensual(anio: int, mes: int) -> Dict[str, Any]:
     citas_virtual = {"cantidad": 0, "total": 0.0}
 
     for fila in filas_citas:
-        mod = fila["modalidad"]
-        if mod == "presencial":
+        canal = fila["canal"]
+        if canal == "presencial":
             citas_presencial["cantidad"] = fila["cantidad"]
             citas_presencial["total"] = float(fila["total"] or 0)
-        elif mod == "virtual":
+        elif canal == "virtual":
             citas_virtual["cantidad"] = fila["cantidad"]
             citas_virtual["total"] = float(fila["total"] or 0)
 
     total_particulares = citas_presencial["total"] + citas_virtual["total"]
+    cantidad_citas_pagadas = (
+        citas_presencial["cantidad"] + citas_virtual["cantidad"]
+    )
+    
 
     # ----- Citas de convenio en el mes (carga de trabajo) -----
     cur.execute(
@@ -2365,6 +2502,17 @@ def resumen_financiero_mensual(anio: int, mes: int) -> Dict[str, Any]:
         (f_desde, f_hasta),
     )
     filas_gastos = cur.fetchall()
+    # ----- Paquetes de arriendo comprados en el mes (se consideran GASTO) -----
+    cur.execute(
+        """
+        SELECT IFNULL(SUM(costo_total), 0) AS total
+        FROM paquetes_arriendo
+        WHERE date(fecha_compra) BETWEEN date(?) AND date(?);
+        """,
+        (f_desde, f_hasta),
+    )
+    row_pkg = cur.fetchone()
+    total_paquetes_arriendo = float((row_pkg["total"] if row_pkg else 0) or 0)
     conn.close()
 
     gastos_por_tipo: Dict[str, float] = {}
@@ -2375,6 +2523,11 @@ def resumen_financiero_mensual(anio: int, mes: int) -> Dict[str, Any]:
         total = float(fila["total"] or 0)
         gastos_por_tipo[tipo] = total
         total_gastos += total
+        
+        # Agregar paquetes de arriendo como gasto
+    if total_paquetes_arriendo > 0:
+        gastos_por_tipo["paquetes_arriendo"] = total_paquetes_arriendo
+        total_gastos += total_paquetes_arriendo
 
     # ----- Utilidad -----
     ingresos_brutos = total_particulares + total_facturas_emitidas
@@ -2388,6 +2541,9 @@ def resumen_financiero_mensual(anio: int, mes: int) -> Dict[str, Any]:
                 "presencial": citas_presencial,
                 "virtual": citas_virtual,
                 "total_particulares": total_particulares,
+                "cantidad_citas_pagadas": int(
+                    citas_presencial["cantidad"] + citas_virtual["cantidad"]
+                ),
             },
             "convenios": {
                 "cantidad_citas": cantidad_citas_convenio,
@@ -2501,16 +2657,206 @@ def registrar_paquete_arriendo(datos: dict):
 
     conn.commit()
     conn.close()
-
-def resumen_paquetes_arriendo() -> Dict[str, Any]:
+    
+def listar_paquetes_arriendo(solo_activos: bool = False) -> list[dict]:
     """
-    Devuelve un resumen global de los paquetes de arriendo registrados.
+    Lista paquetes de arriendo (para mostrar/editar/eliminar en UI).
 
-    Retorna un dict con:
-      - total_citas: suma de cantidad_citas
-      - citas_usadas: suma de citas_usadas
-      - citas_disponibles: total_citas - citas_usadas
-      - costo_total: suma de costo_total
+    - solo_activos=False (default): devuelve TODOS (incluye consumidos) -> no rompe llamadas existentes.
+    - solo_activos=True: devuelve solo los que aún tienen citas disponibles.
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    where = ""
+    if solo_activos:
+        # disponibles = cantidad_citas - citas_usadas > 0
+        where = "WHERE (cantidad_citas - citas_usadas) > 0"
+
+    cur.execute(f"""
+        SELECT
+            id,
+            fecha_compra,
+            cantidad_citas,
+            citas_usadas,
+            costo_total,
+            notas
+        FROM paquetes_arriendo
+        {where}
+        ORDER BY date(fecha_compra) DESC, id DESC;
+    """)
+
+    filas = cur.fetchall()
+    conn.close()
+
+    return [
+        {
+            "id": int(r["id"]),
+            "fecha_compra": r["fecha_compra"],
+            "cantidad_citas": int(r["cantidad_citas"] or 0),
+            "citas_usadas": int(r["citas_usadas"] or 0),
+            "costo_total": float(r["costo_total"] or 0),
+            "notas": (r["notas"] or ""),
+        }
+        for r in filas
+    ]
+
+
+
+def obtener_paquete_arriendo(paquete_id: int) -> dict | None:
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT
+            id, fecha_compra, cantidad_citas, citas_usadas, costo_total, notas
+        FROM paquetes_arriendo
+        WHERE id = ?;
+    """, (paquete_id,))
+
+    r = cur.fetchone()
+    conn.close()
+
+    if not r:
+        return None
+
+    return {
+        "id": int(r["id"]),
+        "fecha_compra": r["fecha_compra"],
+        "cantidad_citas": int(r["cantidad_citas"] or 0),
+        "citas_usadas": int(r["citas_usadas"] or 0),
+        "costo_total": float(r["costo_total"] or 0),
+        "notas": (r["notas"] or ""),
+    }
+
+
+def actualizar_paquete_arriendo(paquete_id: int, datos: dict) -> None:
+    """
+    datos esperados:
+      - fecha_compra (YYYY-MM-DD)
+      - cantidad_citas (int)
+      - precio_total (float)
+      - descripcion (str)
+    Regla: si reduces cantidad_citas por debajo de citas_usadas -> error.
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute("SELECT citas_usadas FROM paquetes_arriendo WHERE id = ?;", (paquete_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        raise ValueError("El paquete no existe.")
+
+    usadas = int(row["citas_usadas"] or 0)
+    nuevas_totales = int(datos["cantidad_citas"])
+
+    if nuevas_totales < usadas:
+        conn.close()
+        raise ValueError(
+            f"No puedes dejar el paquete con {nuevas_totales} citas si ya hay {usadas} consumidas."
+        )
+
+    cur.execute("""
+        UPDATE paquetes_arriendo
+        SET
+            fecha_compra = ?,
+            cantidad_citas = ?,
+            costo_total = ?,
+            notas = ?
+        WHERE id = ?;
+    """, (
+        datos["fecha_compra"],
+        nuevas_totales,
+        float(datos["precio_total"]),
+        (datos.get("descripcion") or ""),
+        paquete_id
+    ))
+
+    conn.commit()
+    conn.close()
+
+
+def eliminar_paquete_arriendo(paquete_id: int) -> None:
+    """
+    Elimina paquete y sus consumos asociados.
+    Como la BD está vacía/de prueba, esto es seguro y mantiene coherencia.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    # borrar consumos primero (por si no tienes ON DELETE CASCADE)
+    cur.execute("DELETE FROM consumo_paquetes_arriendo WHERE paquete_id = ?;", (paquete_id,))
+    cur.execute("DELETE FROM paquetes_arriendo WHERE id = ?;", (paquete_id,))
+
+    conn.commit()
+    conn.close()
+
+def resumen_paquetes_arriendo(solo_activos: bool = False) -> dict:
+    """
+    Retorna:
+      - total_citas
+      - citas_usadas
+      - citas_disponibles
+      - costo_total
+      - costo_promedio_cita (si aplica)
+    Si solo_activos=True, solo suma paquetes con disponibles > 0.
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    # Usadas por paquete = count(consumos)
+    where_activos = ""
+    if solo_activos:
+        # disponibles = cantidad_citas - usadas > 0
+        where_activos = """
+        WHERE (pa.cantidad_citas - IFNULL(u.usadas,0)) > 0
+        """
+
+    cur.execute(
+        f"""
+        SELECT
+            IFNULL(SUM(pa.cantidad_citas), 0) AS total_citas,
+            IFNULL(SUM(IFNULL(u.usadas,0)), 0) AS citas_usadas,
+            IFNULL(SUM(CASE 
+                WHEN (pa.cantidad_citas - IFNULL(u.usadas,0)) > 0 THEN (pa.cantidad_citas - IFNULL(u.usadas,0))
+                ELSE 0
+            END), 0) AS citas_disponibles,
+
+            IFNULL(SUM(pa.costo_total), 0) AS costo_total
+        FROM paquetes_arriendo pa
+        LEFT JOIN (
+            SELECT paquete_id, COUNT(*) AS usadas
+            FROM consumo_paquetes_arriendo
+            GROUP BY paquete_id
+        ) u ON u.paquete_id = pa.id
+        {where_activos};
+        """
+    )
+
+    row = cur.fetchone() or {}
+    conn.close()
+
+    total_citas = int(row["total_citas"] or 0)
+    costo_total = float(row["costo_total"] or 0)
+    costo_promedio = (costo_total / total_citas) if total_citas > 0 else 0.0
+
+    return {
+        "total_citas": total_citas,
+        "citas_usadas": int(row["citas_usadas"] or 0),
+        "citas_disponibles": int(row["citas_disponibles"] or 0),
+        "costo_total": costo_total,
+        "costo_promedio_cita": costo_promedio,
+    }
+
+def listar_consumos_paquetes_arriendo(fecha_desde: str, fecha_hasta: str):
+    """
+    Retorna consumos de paquetes en un rango (para tabla informativa en Finanzas).
+    Cada consumo corresponde a 1 cita presencial (normalmente).
     """
     conn = get_connection()
     conn.row_factory = sqlite3.Row
@@ -2519,27 +2865,133 @@ def resumen_paquetes_arriendo() -> Dict[str, Any]:
     cur.execute(
         """
         SELECT
-            IFNULL(SUM(cantidad_citas), 0)       AS total_citas,
-            IFNULL(SUM(citas_usadas), 0)         AS citas_usadas,
-            IFNULL(SUM(costo_total), 0)          AS costo_total
-        FROM paquetes_arriendo;
-        """
+            cpa.id                 AS consumo_id,
+            cpa.fecha_consumo      AS fecha_consumo,
+            cpa.cita_id            AS cita_id,
+            cpa.paquete_id         AS paquete_id,
+            cpa.consumido_por      AS consumido_por,
+
+            p.nombre_completo      AS paciente_nombre,
+            ci.canal               AS canal,
+            ci.modalidad           AS modalidad,
+
+            pa.costo_total         AS paquete_costo_total,
+            pa.cantidad_citas      AS paquete_cantidad_citas,
+
+            (pa.costo_total * 1.0 / pa.cantidad_citas) AS costo_promedio_cita
+        FROM consumo_paquetes_arriendo cpa
+        JOIN citas ci
+            ON ci.id = cpa.cita_id
+        JOIN pacientes p
+            ON p.documento = ci.documento_paciente
+        JOIN paquetes_arriendo pa
+            ON pa.id = cpa.paquete_id
+        WHERE date(cpa.fecha_consumo) BETWEEN ? AND ?
+        ORDER BY cpa.fecha_consumo ASC, cpa.id ASC;
+        """,
+        (fecha_desde, fecha_hasta),
     )
 
-    row = cur.fetchone()
+    filas = cur.fetchall()
     conn.close()
 
-    total_citas = int(row["total_citas"] or 0)
-    citas_usadas = int(row["citas_usadas"] or 0)
-    costo_total = float(row["costo_total"] or 0.0)
-    citas_disponibles = max(total_citas - citas_usadas, 0)
+    return [
+        {
+            "consumo_id": int(r["consumo_id"]),
+            "fecha_consumo": r["fecha_consumo"],
+            "cita_id": int(r["cita_id"]),
+            "paquete_id": int(r["paquete_id"]),
+            "consumido_por": (r["consumido_por"] or ""),
+            "paciente_nombre": (r["paciente_nombre"] or ""),
+            "canal": (r["canal"] or ""),
+            "modalidad": (r["modalidad"] or ""),
+            "costo_promedio_cita": float(r["costo_promedio_cita"] or 0),
+        }
+        for r in filas
+    ]
+    
+#==================== Descontar Paquetes para citas presenciales =====================
 
-    return {
-        "total_citas": total_citas,
-        "citas_usadas": citas_usadas,
-        "citas_disponibles": citas_disponibles,
-        "costo_total": costo_total,
-    }
+def _obtener_paquete_arriendo_disponible(cur):
+    cur.execute("""
+        SELECT *
+        FROM paquetes_arriendo
+        WHERE (cantidad_citas - citas_usadas) > 0
+        ORDER BY date(fecha_compra) DESC, id DESC
+        LIMIT 1;
+    """)
+    return cur.fetchone()
+
+
+def consumir_cita_paquete_arriendo(cita_id: int, fecha_consumo: str) -> bool:
+    """
+    Descuenta 1 cita del paquete (si hay disponible) y registra el consumo ligado a cita_id.
+    Retorna True si consumió, False si no había paquete disponible o ya estaba consumida.
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    # Si ya consumió antes, no hacemos nada
+    cur.execute("SELECT 1 FROM consumo_paquetes_arriendo WHERE cita_id = ?;", (cita_id,))
+    if cur.fetchone():
+        conn.close()
+        return False
+
+    paquete = _obtener_paquete_arriendo_disponible(cur)
+    if not paquete:
+        conn.close()
+        return False
+
+    # Marcar consumo (1) y subir citas_usadas
+    cur.execute("""
+        INSERT INTO consumo_paquetes_arriendo (paquete_id, cita_id, fecha_consumo)
+        VALUES (?, ?, ?);
+    """, (paquete["id"], cita_id, fecha_consumo))
+
+    cur.execute("""
+        UPDATE paquetes_arriendo
+        SET citas_usadas = citas_usadas + 1
+        WHERE id = ?;
+    """, (paquete["id"],))
+
+    conn.commit()
+    conn.close()
+    return True
+
+
+def devolver_cita_paquete_arriendo(cita_id: int) -> bool:
+    """
+    Devuelve 1 cita al paquete si existía consumo asociado a cita_id.
+    Retorna True si devolvió, False si no había consumo.
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT paquete_id
+        FROM consumo_paquetes_arriendo
+        WHERE cita_id = ?;
+    """, (cita_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return False
+
+    paquete_id = row["paquete_id"]
+
+    # borrar consumo y restar usadas (sin bajar de 0)
+    cur.execute("DELETE FROM consumo_paquetes_arriendo WHERE cita_id = ?;", (cita_id,))
+    cur.execute("""
+        UPDATE paquetes_arriendo
+        SET citas_usadas = CASE WHEN citas_usadas > 0 THEN citas_usadas - 1 ELSE 0 END
+        WHERE id = ?;
+    """, (paquete_id,))
+
+    conn.commit()
+    conn.close()
+    return True
 
 
 # ------------ CONFIGURACIÓN FACTURACIÓN -------------

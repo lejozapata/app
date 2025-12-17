@@ -28,6 +28,8 @@ from db import (
     existe_bloqueo_en_fecha,
     existe_bloqueo_en_rango,
     obtener_configuracion_profesional,
+    consumir_cita_paquete_arriendo,
+    devolver_cita_paquete_arriendo,
 )
 
 
@@ -495,6 +497,29 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
     dd_estado = build_estado_selector()
 
     chk_pagado = ft.Checkbox(label="Pagado", value=False)
+    
+    #------------------- Sincronizar checkbox pagado según modalidad -------------------
+    
+    def _sync_pagado_por_modalidad(modalidad: str):
+        """
+        Reglas de pago:
+        - Convenio: no se paga en agenda (se paga vía facturas)
+        - Particular: se permite marcar como pagado
+        """
+        es_convenio = modalidad in ("convenio", "convenio_empresarial")
+
+        if es_convenio:
+            chk_pagado.value = False
+            chk_pagado.disabled = True
+            chk_pagado.visible = False
+        else:
+            chk_pagado.disabled = False
+            chk_pagado.visible = True
+
+        try:
+            chk_pagado.update()
+        except Exception:
+            pass
 
     chk_notificar_email = ft.Checkbox(
         label="Enviar correo de confirmación al paciente",
@@ -759,6 +784,7 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         # Mostrar empresa solo si el servicio es de modalidad Convenio
         mod_srv = (srv.get("modalidad") or srv.get("tipo") or "").strip()
         es_convenio = mod_srv in ("convenio", "convenio_empresarial")
+        _sync_pagado_por_modalidad(mod_srv)
 
         if es_convenio:
             txt_empresa_convenio.value = srv.get("empresa") or ""
@@ -856,7 +882,10 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
 
         estado = dd_estado.get_value()
-        pagado_flag = 1 if chk_pagado.value else 0
+        if modalidad in ("convenio", "convenio_empresarial"):
+            pagado_flag = 0
+        else:
+            pagado_flag = 1 if chk_pagado.value else 0
 
         motivo = f"Servicio: {srv['nombre']} - Valor: {precio_final:,.0f}"
         notas = (txt_notas.value or "").strip()
@@ -903,6 +932,28 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         else:
             cita_id = cita_editando_id["value"]
             actualizar_cita(cita_id, datos_cita)
+            
+        # ----------------- CONSUMO DE PAQUETE (SOLO PRESENCIAL) -----------------
+        try:
+            canal_nuevo = canal
+            fecha_consumo = datos_cita["fecha_hora"][:16]
+
+            if es_nueva:
+                # Cita nueva presencial
+                if canal_nuevo == "presencial":
+                    consumir_cita_paquete_arriendo(cita_id, fecha_consumo)
+            else:
+                # Edición: comparamos canal anterior vs nuevo
+                canal_anterior = (cita_editando_row["value"] or {}).get("canal")
+
+                if canal_anterior != "presencial" and canal_nuevo == "presencial":
+                    consumir_cita_paquete_arriendo(cita_id, fecha_consumo)
+
+                elif canal_anterior == "presencial" and canal_nuevo != "presencial":
+                    devolver_cita_paquete_arriendo(cita_id)
+
+        except Exception as ex:
+            print(f"[WARN] No se pudo procesar paquete de arriendo: {ex}")
 
         # Enviar correo si el usuario lo pidió y hay paciente (de forma asíncrona)
         if chk_notificar_email.value and reserva.get("paciente"):
@@ -1016,6 +1067,15 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         cita_id = cita_editando_id["value"]
 
         if cita_id is not None:
+            
+        # ----------------- DEVOLVER PAQUETE SI ERA PRESENCIAL -----------------
+            try:
+                cita_row = cita_editando_row["value"]
+                if cita_row and cita_row.get("canal") == "presencial":
+                    devolver_cita_paquete_arriendo(cita_id)
+            except Exception as ex:
+                print(f"[WARN] No se pudo devolver cita del paquete: {ex}")
+                
             eliminar_cita(cita_id)
 
             # Enviar correo de cancelación si el usuario lo pidió
