@@ -269,14 +269,24 @@ def build_admin_view(page: ft.Page) -> ft.Control:
     txt_nombre.on_change = on_cambio_nombre_prof
 
     def actualizar_estado_numero_cuenta():
-        if dd_forma_pago.value == "Transferencia bancaria":
-            txt_numero_cuenta.disabled = False
-            txt_numero_cuenta.visible = True
-        else:
-            txt_numero_cuenta.disabled = True
-            txt_numero_cuenta.visible = False
+        es_transferencia = (dd_forma_pago.value or "").strip().lower() == "transferencia bancaria"
+
+        # Número de cuenta
+        txt_numero_cuenta.disabled = not es_transferencia
+        txt_numero_cuenta.visible  = es_transferencia
+        if not es_transferencia:
+            txt_numero_cuenta.value = ""  # opcional, para evitar guardar basura
+
+        # Banco
+        dd_banco.disabled = not es_transferencia
+        dd_banco.visible  = es_transferencia
+        if not es_transferencia:
+            dd_banco.value = None  # opcional
+
         if txt_numero_cuenta.page is not None:
             txt_numero_cuenta.update()
+        if dd_banco.page is not None:
+            dd_banco.update()
 
     def on_cambio_forma_pago(e):
         actualizar_estado_numero_cuenta()
@@ -551,7 +561,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
                 size=12,
                 color=ft.Colors.GREY_700,
             ),
-            ft.Row([dd_banco, dd_forma_pago], spacing=10),
+            ft.Row([dd_forma_pago, dd_banco], spacing=10),
             ft.Row([chk_benef_mismo], spacing=10),
             ft.Row([txt_beneficiario, txt_nit_cc], spacing=10),
             ft.Row([txt_numero_cuenta], spacing=10),

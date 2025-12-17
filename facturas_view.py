@@ -10,11 +10,13 @@ from db import (
     listar_pacientes,
     crear_factura_convenio,
     listar_facturas_convenio,
+    obtener_factura_convenio,
+    actualizar_factura_convenio,
+    eliminar_factura_convenio,
     guardar_empresa_convenio,
     actualizar_estado_factura_convenio,
     obtener_configuracion_facturacion,
 )
-
 
 def build_facturas_view(page: ft.Page) -> ft.Control:
     page.padding = 10
@@ -385,10 +387,23 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
                     on_click=lambda e, fid=fid, est=estado: _toggle_estado_factura(fid, est),
                 )
 
+            btn_edit = ft.IconButton(
+                icon=ft.Icons.EDIT,
+                tooltip="Editar",
+                on_click=lambda e, fid=fid: _editar_factura(fid),
+            )
+
+            btn_del = ft.IconButton(
+                icon=ft.Icons.DELETE,
+                tooltip="Borrar",
+                on_click=lambda e, fid=fid, num=numero: _confirmar_borrar(fid, num),
+            )
+
             acciones = ft.Row(
-                controls=[btn_pagada, btn_pdf],
+                controls=[btn_pagada, btn_pdf, btn_edit, btn_del],
                 spacing=4,
             )
+
 
             facturas_table.rows.append(
                 ft.DataRow(
@@ -412,6 +427,7 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
     # --- Guardar factura en BD ---
 
     def _guardar_factura(e):
+        nonlocal factura_editando_id
         lbl_mensaje.value = ""
 
         if not dd_empresas.value:
@@ -474,7 +490,12 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
         ]
 
         try:
-            factura_creada = crear_factura_convenio(cabecera, items)
+            if factura_editando_id is None:
+                factura_creada = crear_factura_convenio(cabecera, items)
+                msg_ok = f"Factura creada correctamente (No. {factura_creada['numero']})."
+            else:
+                actualizar_factura_convenio(factura_editando_id, cabecera, items)
+                msg_ok = f"Factura actualizada correctamente (ID {factura_editando_id})."
         except Exception as ex:
             lbl_mensaje.value = f"Error al guardar la factura: {ex}"
             page.update()
@@ -493,6 +514,10 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
         txt_valor_unitario.value = ""
         dd_iva_porcentaje.value = "0"
         _recalcular_totales()
+        
+        factura_editando_id = None
+        btn_guardar_factura.text = "Guardar factura de convenio"
+        btn_guardar_factura.icon = ft.Icons.SAVE
 
         # Refrescar los controles visibles
         for c in [
@@ -513,17 +538,14 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
             if c.page is not None:
                 c.update()
 
-        page.snack_bar = ft.SnackBar(
-            content=ft.Text(
-                f"Factura creada correctamente (No. {factura_creada['numero']})."
-            )
-        )
+        page.snack_bar = ft.SnackBar(content=ft.Text(msg_ok))
         page.snack_bar.open = True
 
         _cargar_facturas()
         page.update()
 
-    
+    # Estado para edición
+    factura_editando_id = None
 
     btn_guardar_factura = ft.ElevatedButton(
         "Guardar factura de convenio", icon=ft.Icons.SAVE, on_click=_guardar_factura
@@ -817,6 +839,89 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
         expand=True,
         scroll=ft.ScrollMode.AUTO,
     )
+    
+    # ---------------------------------------------------------------------
+    # ===================== CRUD Para Facturas ======================
+    # ---------------------------------------------------------------------
+    
+    def _fmt_num(v):
+        try:
+            f = float(v)
+            if f.is_integer():
+                return str(int(f))
+            return str(f)
+        except Exception:
+            return str(v or "")
+    
+    def _editar_factura(fid: int):
+        nonlocal factura_editando_id
+
+        data = obtener_factura_convenio(fid)
+        if not data:
+            page.snack_bar = ft.SnackBar(content=ft.Text("No se encontró la factura."))
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        enc = data["encabezado"]
+        dets = data["detalles"]
+
+        # Cabecera
+        dd_empresas.value = str(enc.get("empresa_id") or "")
+        txt_fecha.value = enc.get("fecha") or date.today().isoformat()
+        txt_paciente_documento.value = enc.get("paciente_documento") or ""
+        txt_paciente_nombre.value = enc.get("paciente_nombre") or ""
+        txt_forma_pago.value = enc.get("forma_pago") or ""
+
+        # Detalle (tu UI hoy maneja 1 ítem, tomamos el primero)
+        if dets:
+            d0 = dets[0]
+            txt_descripcion.value = d0.get("descripcion") or "Consulta Psicológica"
+            txt_cantidad.value = _fmt_num(d0.get("cantidad") or "1")
+            txt_valor_unitario.value = _fmt_num(d0.get("valor_unitario") or "")
+            # IVA: en tu UI lo calculas por %; si quieres ser exacto,
+            # aquí podrías inferir el porcentaje con subtotal/iva, pero lo dejamos en 0 o lo que ya esté.
+            # dd_iva_porcentaje.value = "0"
+
+        _recalcular_totales()
+
+        factura_editando_id = fid
+        btn_guardar_factura.text = "Actualizar factura"
+        btn_guardar_factura.icon = ft.Icons.EDIT
+
+        page.update()
+        
+    dlg_confirm_borrar = ft.AlertDialog(modal=True)
+
+    def _confirmar_borrar(fid: int, numero: str):
+        def _hacer_borrado(e):
+            try:
+                eliminar_factura_convenio(fid, borrar_pdf=True)
+            except Exception as ex:
+                page.snack_bar = ft.SnackBar(content=ft.Text(f"Error al borrar: {ex}"))
+                page.snack_bar.open = True
+                page.update()
+                return
+
+            dlg_confirm_borrar.open = False
+            page.update()
+            _cargar_facturas()
+
+        dlg_confirm_borrar.title = ft.Text("Confirmar borrado")
+        dlg_confirm_borrar.content = ft.Text(
+            f"¿Seguro que deseas borrar la factura {numero}? (también se borrará su PDF si existe)"
+        )
+        dlg_confirm_borrar.actions = [
+            ft.TextButton("Cancelar", on_click=lambda e: setattr(dlg_confirm_borrar, "open", False) or page.update()),
+            ft.ElevatedButton("Borrar", icon=ft.Icons.DELETE, on_click=_hacer_borrado),
+        ]
+
+        page.dialog = dlg_confirm_borrar
+        dlg_confirm_borrar.open = True
+        page.open(dlg_confirm_borrar)
+        page.update()
+
+
 
 
     # ---------------------------------------------------------------------

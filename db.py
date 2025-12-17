@@ -2,6 +2,7 @@ import sqlite3
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 from datetime import date, datetime, timedelta
+import os
 
 
 # ----------------- Reglas de negocio de citas -----------------
@@ -1692,6 +1693,97 @@ def crear_factura_convenio(
         raise
     finally:
         conn.close()
+        
+def actualizar_factura_convenio(
+    factura_id: int,
+    datos_cabecera: Dict[str, Any],
+    items: List[Dict[str, Any]],
+) -> None:
+    conn = get_connection()
+    cur = conn.cursor()
+
+    # 1) Update encabezado (NO toco numero si no quieres)
+    cur.execute(
+        """
+        UPDATE facturas_convenio
+        SET fecha = ?,
+            empresa_id = ?,
+            paciente_documento = ?,
+            paciente_nombre = ?,
+            subtotal = ?,
+            iva = ?,
+            total = ?,
+            total_letras = ?,
+            forma_pago = ?,
+            estado = ?,
+            actualizada_en = datetime('now','localtime')
+        WHERE id = ?;
+        """,
+        (
+            datos_cabecera.get("fecha"),
+            datos_cabecera.get("empresa_id"),
+            datos_cabecera.get("paciente_documento"),
+            datos_cabecera.get("paciente_nombre"),
+            datos_cabecera.get("subtotal", 0),
+            datos_cabecera.get("iva", 0),
+            datos_cabecera.get("total", 0),
+            datos_cabecera.get("total_letras"),
+            datos_cabecera.get("forma_pago"),
+            datos_cabecera.get("estado", "pendiente"),
+            factura_id,
+        ),
+    )
+
+    # 2) Reemplazar detalle
+    cur.execute("DELETE FROM facturas_convenio_detalle WHERE factura_id = ?;", (factura_id,))
+    for it in items:
+        cur.execute(
+            """
+            INSERT INTO facturas_convenio_detalle
+              (factura_id, descripcion, cantidad, valor_unitario, valor_total)
+            VALUES (?, ?, ?, ?, ?);
+            """,
+            (
+                factura_id,
+                it.get("descripcion"),
+                it.get("cantidad", 1),
+                it.get("valor_unitario", 0),
+                it.get("valor_total", 0),
+            ),
+        )
+
+    # 3) (Opcional pero recomendado) invalidar ruta_pdf para forzar regen
+    cur.execute(
+        """
+        UPDATE facturas_convenio
+        SET ruta_pdf = NULL, actualizada_en = datetime('now','localtime')
+        WHERE id = ?;
+        """,
+        (factura_id,),
+    )
+
+    conn.commit()
+    conn.close()
+    
+def eliminar_factura_convenio(factura_id: int, borrar_pdf: bool = True) -> None:
+    # 1) buscar ruta_pdf antes de borrar
+    factura = obtener_factura_convenio(factura_id)
+    ruta_pdf = None
+    if factura and factura.get("encabezado"):
+        ruta_pdf = factura["encabezado"].get("ruta_pdf")
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM facturas_convenio_detalle WHERE factura_id = ?;", (factura_id,))
+    cur.execute("DELETE FROM facturas_convenio WHERE id = ?;", (factura_id,))
+    conn.commit()
+    conn.close()
+
+    if borrar_pdf and ruta_pdf and os.path.exists(ruta_pdf):
+        try:
+            os.remove(ruta_pdf)
+        except Exception:
+            pass
 
 # ---------------- Utilidades para facturación ----------------
 
