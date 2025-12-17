@@ -478,44 +478,37 @@ def generar_pdf_factura(factura_id: int, abrir: bool = True, force: bool = False
         )
     )
     story.append(Spacer(1, 12))
+    
+    #Definir forma de pago en el PDF
+    
+    es_transferencia = "transfer" in (forma_pago or "").lower()
 
     # ---------- Datos bancarios ----------
-    banco = cfg_fact.get("banco") or "Bancolombia"
-    beneficiario = cfg_fact.get("beneficiario") or nombre_prof
-    nit_benef = cfg_fact.get("nit") or nit_prof
-    num_cuenta = cfg_fact.get("numero_cuenta") or ""
+    if es_transferencia:
+        banco = cfg_fact.get("banco") or "Bancolombia"
+        beneficiario = cfg_fact.get("beneficiario") or nombre_prof
+        nit_benef = cfg_fact.get("nit") or nit_prof
+        num_cuenta = cfg_fact.get("numero_cuenta") or ""
 
-    datos_banco = [
-        [
-            Paragraph("Banco:", etiqueta),
-            Paragraph(banco, normal),
-        ],
-        [
-            Paragraph("Beneficiario:", etiqueta),
-            Paragraph(beneficiario, normal),
-        ],
-        [
-            Paragraph("NIT:", etiqueta),
-            Paragraph(nit_benef, normal),
-        ],
-        [
-            Paragraph("No. Cuenta:", etiqueta),
-            Paragraph(num_cuenta, normal),
-        ],
-    ]
-    tabla_banco = Table(
-        datos_banco,
-        colWidths=[30 * mm, (detalle_total_width_mm - 30) * mm],
-    )
-    tabla_banco.setStyle(
-        TableStyle(
-            [
-                ("TOPPADDING", (0, 0), (-1, -1), 2),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-            ]
+        datos_banco = [
+            [Paragraph("Banco:", etiqueta), Paragraph(banco, normal)],
+            [Paragraph("Beneficiario:", etiqueta), Paragraph(beneficiario, normal)],
+            [Paragraph("NIT:", etiqueta), Paragraph(nit_benef, normal)],
+            [Paragraph("No. Cuenta:", etiqueta), Paragraph(num_cuenta, normal)],
+        ]
+        tabla_banco = Table(
+            datos_banco,
+            colWidths=[30 * mm, (detalle_total_width_mm - 30) * mm],
         )
-    )
-    story.append(tabla_banco)
+        tabla_banco.setStyle(
+            TableStyle(
+                [
+                    ("TOPPADDING", (0, 0), (-1, -1), 2),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                ]
+            )
+        )
+        story.append(tabla_banco)
 
     # ==========================================================
     # PÁGINA 2: Declaración + firma

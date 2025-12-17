@@ -11,7 +11,8 @@ from db import (
     crear_factura_convenio,
     listar_facturas_convenio,
     guardar_empresa_convenio,
-    actualizar_estado_factura_convenio
+    actualizar_estado_factura_convenio,
+    obtener_configuracion_facturacion,
 )
 
 
@@ -178,6 +179,15 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
         value="Transferencia bancaria",
         width=250,
     )
+    
+    # --- Forma de pago por defecto desde Admin (configuración_facturación) ---
+    try:
+        cfg_fact = obtener_configuracion_facturacion()
+        forma_cfg = (cfg_fact.get("forma_pago") or "").strip()
+        if forma_cfg:
+            txt_forma_pago.value = forma_cfg
+    except Exception:
+        pass
 
     lbl_mensaje = ft.Text("", color=ft.Colors.RED_400)
 
