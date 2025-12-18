@@ -123,46 +123,50 @@ def build_citas_tabla_view(
 
     def _accion_editar(r: dict):
         if callable(on_edit_cita):
-            _close()  # cerrar la tabla antes de abrir el dialog de edición
+            if dlg_holder["dlg"]:
+                page.close(dlg_holder["dlg"])
+                page.update()
+
             on_edit_cita(r)
-            return
+
         page.snack_bar = ft.SnackBar(ft.Text("Hook: on_edit_cita no está conectado."), open=True)
         page.update()
 
     def _accion_cancelar(r: dict):
-        # Confirmación SIEMPRE
-        def _do_confirm(e=None):
-            dlg_confirm.open = False
-            page.update()
+        cita_id = r.get("id")
+        if not cita_id:
+            return
 
-            # cerrar la tabla antes de ejecutar cancelación
-            dlg.open = False
-            page.update()
+        paciente = (r.get("nombre_completo") or "").strip()
+        fecha_hora = (r.get("fecha_hora") or "").strip()
 
-            if callable(on_cancel_cita):
-                on_cancel_cita(r)
-            else:
-                # Fallback: borrar directo
-                try:
-                    eliminar_cita(int(r["id"]))
-                except Exception as ex:
-                    page.snack_bar = ft.SnackBar(ft.Text(f"Error al borrar cita: {ex}"), open=True)
-                    page.update()
-                    return
+        def _do(_):
+            try:
+                # Si agenda_view está conectado, que él haga la cancelación/borrado y refresco
+                if callable(on_cancel_cita):
+                    on_cancel_cita(r)
+                else:
+                    eliminar_cita(int(cita_id))
 
-            # (opcional) si quieres refrescar la tabla luego de cancelar,
-            # puedes reabrirla o simplemente dejarla cerrada (más limpio).
-            # _refrescar()
+                dlg_confirm.open = False
+                page.update()
+                _refrescar()
+            except Exception as ex:
+                dlg_confirm.open = False
+                page.snack_bar = ft.SnackBar(ft.Text(f"Error al borrar cita: {ex}"), open=True)
+                page.update()
 
         dlg_confirm = ft.AlertDialog(
             modal=True,
-            title=ft.Text("Confirmar cancelación"),
-            content=ft.Text(_texto_confirmacion(r)),
+            title=ft.Text("Confirmar borrado"),
+            content=ft.Text(
+                f"¿Seguro que deseas borrar la cita de {paciente or 'este paciente'}?\n{fecha_hora}\n\n"
+                "Esta acción no se puede deshacer."
+            ),
             actions=[
-                ft.TextButton("No", on_click=lambda e: _cerrar_confirm(dlg_confirm)),
-                ft.ElevatedButton("Sí, cancelar", icon=ft.Icons.DELETE, on_click=_do_confirm),
+                ft.TextButton("Cancelar", on_click=lambda e: _cerrar_confirm(dlg_confirm)),
+                ft.ElevatedButton("Borrar", icon=ft.Icons.DELETE, on_click=_do),
             ],
-            actions_alignment=ft.MainAxisAlignment.END,
         )
         page.open(dlg_confirm)
 
@@ -211,11 +215,11 @@ def build_citas_tabla_view(
                 tooltip="Editar",
                 on_click=lambda e, rr=r: _accion_editar(rr),
             )
-            btn_cancel = ft.IconButton(
-                icon=ft.Icons.DELETE_OUTLINE,
-                tooltip="Cancelar / borrar",
-                on_click=lambda e, rr=r: _accion_cancelar(rr),
-            )
+            # btn_cancel = ft.IconButton(
+            #     icon=ft.Icons.DELETE_OUTLINE,
+            #     tooltip="Cancelar / borrar",
+            #     on_click=lambda e, rr=r: _accion_cancelar(rr),
+            # )
 
             data_rows.append(
                 ft.DataRow(
@@ -228,7 +232,10 @@ def build_citas_tabla_view(
                         ft.DataCell(ft.Text(valor)),
                         ft.DataCell(ft.Text(estado_txt)),
                         ft.DataCell(ft.Text(pagado)),
-                        ft.DataCell(ft.Row([btn_edit, btn_cancel], spacing=0)),
+                        ft.DataCell(ft.Row([btn_edit, 
+                                            #btn_cancel
+                                            ], 
+                                           spacing=0)),
                     ]
                 )
             )
@@ -331,10 +338,12 @@ def build_citas_tabla_view(
         ),
         actions=[],  # sin botón "Cerrar" abajo
     )
+    
+    dlg_holder = {"dlg": None}
 
     def _close():
-        dlg.open = False
-        page.update()
+        if dlg_holder["dlg"]:
+            page.close(dlg_holder["dlg"])
 
     # primera carga
     _refrescar()

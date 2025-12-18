@@ -97,6 +97,7 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
     # DatePicker para seleccionar fecha del bloqueo
     bloqueo_date_picker = ft.DatePicker()
     page.overlay.append(bloqueo_date_picker)
+    
 
 
     # ==================== CONFIG / HORARIOS ====================
@@ -982,8 +983,11 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
 
         # Cerrar diálogo, refrescar agenda y mostrar snackbar de éxito genérico
-        dialogo_reserva.open = False
-        page.update()
+        try:
+            page.close(dialogo_reserva)
+        except Exception:
+            dialogo_reserva.open = False
+            page.update()
 
         dibujar_calendario_semanal()
 
@@ -1000,8 +1004,11 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
 
     def cerrar_dialogo(e=None):
-        dialogo_reserva.open = False
-        page.update()
+        try:
+            page.close(dialogo_reserva)
+        except Exception:
+            dialogo_reserva.open = False
+            page.update()
 
     # ----------------- CONTENIDO PRINCIPAL DEL DIÁLOGO -------------------
 
@@ -1112,8 +1119,11 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
                 threading.Thread(target=tarea_cancel, daemon=True).start()
 
-        dialogo_reserva.open = False
-        page.update()
+        try:
+            page.close(dialogo_reserva)
+        except Exception:
+            dialogo_reserva.open = False
+            page.update()
 
         dibujar_calendario_semanal()
 
@@ -1860,8 +1870,11 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
         
         # --- Cerrar el diálogo antes de navegar ---
-        dialogo_reserva.open = False
-        page.update()
+        try:
+            page.close(dialogo_reserva)
+        except Exception:
+            dialogo_reserva.open = False
+            page.update()
 
         # Navegar a la vista de facturación si el main registró un callback
         cb = getattr(page, "mostrar_facturas_cb", None)
