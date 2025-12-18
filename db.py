@@ -3263,6 +3263,29 @@ def guardar_configuracion_gmail(cfg: dict) -> None:
 
     conn.commit()
     conn.close()
+    
+def obtener_cita_con_paciente(cita_id: int):
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+            c.*,
+            p.nombre_completo,
+            p.indicativo_pais,
+            p.telefono,
+            p.email
+        FROM citas c
+        JOIN pacientes p ON p.documento = c.documento_paciente
+        WHERE c.id = ?
+        LIMIT 1;
+        """,
+        (int(cita_id),),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
 
 
 

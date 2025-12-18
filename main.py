@@ -6,6 +6,7 @@ from pacientes_view import build_pacientes_view
 from facturas_view import build_facturas_view
 from historia_view import build_historia_view
 from finanzas_view import build_finanzas_view
+from citas_tabla_view import build_citas_tabla_view
 
 
 def main(page: ft.Page):
@@ -41,6 +42,7 @@ def main(page: ft.Page):
     def mostrar_agenda(e=None):
         body.content = build_agenda_view(page)
         page.update()
+    page.mostrar_agenda_cb = mostrar_agenda
 
     def mostrar_admin(e=None):
         body.content = build_admin_view(page)
@@ -60,6 +62,10 @@ def main(page: ft.Page):
         body.content = build_historia_view(page)
         page.update()
     page.mostrar_historia_cb = mostrar_historia
+    
+    def mostrar_citas_tabla(e=None):
+        body.content = build_citas_tabla_view(page)
+        page.update()
 
 #
 

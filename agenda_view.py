@@ -10,6 +10,7 @@ import flet as ft
 from datetime import date, datetime, timedelta
 import threading
 import urllib.parse
+from citas_tabla_view import build_citas_tabla_view
 
 from db import (
     obtener_horarios_atencion,
@@ -30,6 +31,7 @@ from db import (
     obtener_configuracion_profesional,
     consumir_cita_paquete_arriendo,
     devolver_cita_paquete_arriendo,
+    obtener_cita_con_paciente,
 )
 
 
@@ -1165,6 +1167,23 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
         if dialogo_reserva.page is not None:
             dialogo_reserva.update()
+            
+    def cancelar_cita_desde_tabla(row: dict):
+        # setear el contexto igual que cuando editas desde un slot
+        cita_editando_id["value"] = row["id"]
+        cita_editando_row["value"] = row
+
+        pac = {
+            "documento": row.get("documento_paciente"),
+            "nombre_completo": row.get("nombre_completo"),
+            "telefono": row.get("telefono", ""),
+            "email": row.get("email", ""),
+            "indicativo_pais": row.get("indicativo_pais", "") or "57",
+        }
+        paciente_cita_editando["value"] = pac
+
+        # reutiliza TU flujo que ya refresca la grilla
+        ejecutar_cancelacion(enviar_notificacion=False)
 
 
     # ----------------- DIÁLOGO DE BLOQUEO DE HORARIO -------------------
@@ -2638,6 +2657,14 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         page.update()
 
     toggle_btn.on_click = toggle_panel
+    
+    def abrir_tabla_citas(e=None):
+        dlg = build_citas_tabla_view(
+            page,
+            on_edit_cita=abrir_editar_cita,
+            on_cancel_cita=cancelar_cita_desde_tabla,
+        )
+        page.open(dlg)
 
     panel_izquierdo = ft.Container(
         padding=10,
@@ -2680,6 +2707,15 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         ),
         width=260,
     )
+    
+    btn_resumen_citas = ft.FilledButton(
+        text="Resumen de citas",
+        icon=ft.Icons.TABLE_ROWS,
+        on_click=abrir_tabla_citas,
+    )
+
+    panel_izquierdo.content.controls.append(btn_resumen_citas)
+    
 
     # ----------------- RENDER INICIAL -------------------
 
@@ -2694,6 +2730,35 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         ],
         expand=True,
     )
+
+    
+    
+    # --- Abrir cita específica si venimos desde la tabla ---
+    try:
+        abrir_id = page.session.get("abrir_cita_id")
+    except Exception:
+        abrir_id = getattr(page, "abrir_cita_id", None)
+
+    if abrir_id:
+        try:
+            row = obtener_cita_con_paciente(int(abrir_id))
+            if row:
+                abrir_editar_cita(dict(row))
+            # limpiar el flag para que no se reabra siempre
+            try:
+                page.session.remove("abrir_cita_id")
+            except Exception:
+                try:
+                    delattr(page, "abrir_cita_id")
+                except Exception:
+                    pass
+        except Exception as ex:
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"No se pudo abrir la cita para edición: {ex}"),
+                bgcolor=ft.Colors.RED_300,
+            )
+            page.snack_bar.open = True
+            page.update()
 
     return ft.Row(
         [
