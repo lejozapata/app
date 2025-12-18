@@ -88,6 +88,7 @@ def build_citas_tabla_view(
 
     lbl_mes = ft.Text(weight="bold")
     table_host = ft.Column([], expand=True, scroll=ft.ScrollMode.AUTO)
+    contador_txt = ft.Text("", weight="bold", size=13)
 
     def _set_mes_label():
         d = estado["month_ref"]
@@ -121,13 +122,15 @@ def build_citas_tabla_view(
                 out.append(r)
         return out
 
+    dlg_holder = {"dlg": None}
+    
     def _accion_editar(r: dict):
         if callable(on_edit_cita):
             if dlg_holder["dlg"]:
                 page.close(dlg_holder["dlg"])
                 page.update()
-
             on_edit_cita(r)
+            return   # <-- esto es clave
 
         page.snack_bar = ft.SnackBar(ft.Text("Hook: on_edit_cita no está conectado."), open=True)
         page.update()
@@ -208,7 +211,25 @@ def build_citas_tabla_view(
             canal = (r.get("canal") or "")
             valor = _fmt_money(r.get("precio"))
             estado_txt = (r.get("estado") or "")
-            pagado = "Sí" if int(r.get("pagado") or 0) == 1 else "No"
+            #Pagado
+            modalidad_l = (r.get("modalidad") or "").lower()
+
+            if modalidad_l == "convenio":
+                pagado_cell = ft.Row(
+                    [
+                        ft.Text("Convenio", color=ft.Colors.GREY_700),
+                        ft.Icon(
+                            ft.Icons.INFO_OUTLINE,
+                            size=14,
+                            tooltip="Las citas por convenio se gestionan desde Facturación",
+                        ),
+                    ],
+                    spacing=4,
+                )
+            else:
+                pagado = "Sí" if int(r.get("pagado") or 0) == 1 else "No"
+                pagado_cell = ft.Text(pagado)
+            #Fin Pagado
 
             btn_edit = ft.IconButton(
                 icon=ft.Icons.EDIT,
@@ -231,7 +252,7 @@ def build_citas_tabla_view(
                         ft.DataCell(ft.Text(canal)),
                         ft.DataCell(ft.Text(valor)),
                         ft.DataCell(ft.Text(estado_txt)),
-                        ft.DataCell(ft.Text(pagado)),
+                        ft.DataCell(pagado_cell),
                         ft.DataCell(ft.Row([btn_edit, 
                                             #btn_cancel
                                             ], 
@@ -260,6 +281,11 @@ def build_citas_tabla_view(
         _set_mes_label()
         _cargar_rows_mes()
         rows = _aplicar_filtro(estado["rows_raw"])
+        total = len(rows)
+        presenciales = sum(1 for c in rows if (c.get("canal") or "").lower() == "presencial")
+        virtuales = sum(1 for c in rows if (c.get("canal") or "").lower() == "virtual")
+
+        contador_txt.value = f"Total citas: {total} | Presenciales: {presenciales} | Virtuales: {virtuales}"
 
         table_host.controls.clear()
         table_host.controls.append(_build_table(rows))
@@ -298,6 +324,16 @@ def build_citas_tabla_view(
         alignment=ft.MainAxisAlignment.START,
         vertical_alignment=ft.CrossAxisAlignment.CENTER,
     )
+    
+    def _close():
+        d = dlg_holder.get("dlg")
+        if d is None:
+            return
+        try:
+            page.close(d)
+        except Exception:
+            d.open = False
+            page.update()
 
     dlg = ft.AlertDialog(
         modal=False,
@@ -330,6 +366,7 @@ def build_citas_tabla_view(
             content=ft.Column(
                 [
                     header,
+                    contador_txt,
                     ft.Divider(),
                     table_host,
                 ],
@@ -338,12 +375,8 @@ def build_citas_tabla_view(
         ),
         actions=[],  # sin botón "Cerrar" abajo
     )
-    
-    dlg_holder = {"dlg": None}
+    dlg_holder["dlg"] = dlg
 
-    def _close():
-        if dlg_holder["dlg"]:
-            page.close(dlg_holder["dlg"])
 
     # primera carga
     _refrescar()

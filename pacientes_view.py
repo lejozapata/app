@@ -3,6 +3,13 @@ import json
 from pathlib import Path
 from datetime import datetime, date
 import flet as ft
+from pacientes_excel import (
+    crear_plantilla_pacientes,
+    exportar_pacientes_a_excel,
+    importar_pacientes_desde_excel,
+    validar_archivo_pacientes_excel,
+    PlantillaExcelInvalidaError,
+)
 from db import (
     crear_paciente,
     listar_pacientes,
@@ -46,6 +53,35 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         """Marca que el formulario tiene cambios sin guardar."""
         nonlocal form_dirty
         form_dirty = True
+        
+        
+    # ------------------------------------------------------------------   
+    # ERRORES DEL IMPORT EXCEL
+    # ------------------------------------------------------------------
+    
+    def _show_dialog(titulo: str, lineas: list[str]):
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(titulo),
+            content=ft.Container(
+                content=ft.ListView(
+                    controls=[ft.Text(x, selectable=True) for x in lineas],
+                    expand=True,
+                    spacing=6,
+                ),
+                width=700,
+                height=400,
+            ),
+            actions=[ft.TextButton("Cerrar")],
+        )
+
+        def _close(e=None):
+            dlg.open = False
+            page.update()
+
+        dlg.actions[0].on_click = _close
+
+        page.open(dlg)   # <-- CLAVE
 
 
     # ------------------------------------------------------------------
@@ -281,8 +317,8 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
                 key="sexo_default",
                 disabled=True,
             ),
-            ft.dropdown.Option("F"),
-            ft.dropdown.Option("M"),
+            ft.dropdown.Option("Femenino"),
+            ft.dropdown.Option("Masculino"),
             ft.dropdown.Option("Otro"),
             ft.dropdown.Option("Prefiere no decir"),
         ],
@@ -1446,6 +1482,87 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
         tooltip="Abrir calendario",
         on_click=abrir_datepicker,
     )
+    
+     # ---------------- Excel Import/Export ----------------
+
+    def _snack_ok(msg: str):
+        page.snack_bar = ft.SnackBar(content=ft.Text(msg))
+        page.snack_bar.open = True
+        page.update()
+
+    def _snack_err(msg: str):
+        page.snack_bar = ft.SnackBar(content=ft.Text(msg))
+        page.snack_bar.open = True
+        page.update()
+
+    def on_pick_import_result(e: ft.FilePickerResultEvent):
+        if not e.files:
+            return
+
+        archivo = e.files[0].path
+        if not archivo:
+            _snack_err("No se pudo acceder a la ruta del archivo. (En web, usa versión desktop o ajusta lectura por bytes).")
+            return
+        try:
+            # (Opcional) validar antes para fallar rápido con mensaje claro
+            validar_archivo_pacientes_excel(archivo)
+
+            res = importar_pacientes_desde_excel(archivo)
+            cargar_pacientes()
+
+            resumen = f"Importación OK. Insertados: {res.insertados}, Actualizados: {res.actualizados}."
+            if res.warnings:
+                resumen += f" Avisos: {len(res.warnings)}."
+            if res.errores:
+                resumen += f" Errores: {len(res.errores)}."
+
+            _snack_ok(resumen)
+
+            # Mostrar detalles si hay
+            if res.warnings:
+                _show_dialog("Avisos de importación", res.warnings)
+
+            if res.errores:
+                # si hay MUCHOS, mostramos los primeros N para no saturar
+                _show_dialog("Errores de importación (primeros 200)", res.errores[:200])
+
+        except PlantillaExcelInvalidaError as ex:
+            _snack_err("Archivo inválido para importar.")
+            _show_dialog("Archivo inválido", [
+                str(ex),
+                "",
+                "Sugerencias:",
+                "- Usa el botón 'Plantilla' para descargar la plantilla oficial.",
+                "- No cambies el nombre/orden de columnas.",
+                "- Verifica que sea .xlsx (no .csv).",
+            ])
+        except Exception as ex:
+            _snack_err(f"Error importando Excel: {ex}")
+
+    def on_pick_export_path(e: ft.FilePickerResultEvent):
+        # save_file retorna path en e.path (en desktop)
+        if not e.path:
+            return
+        try:
+            exportar_pacientes_a_excel(e.path)
+            _snack_ok("Exportación OK: archivo generado.")
+        except Exception as ex:
+            _snack_err(f"Error exportando Excel: {ex}")
+
+    def on_pick_template_path(e: ft.FilePickerResultEvent):
+        if not e.path:
+            return
+        try:
+            crear_plantilla_pacientes(e.path)
+            _snack_ok("Plantilla creada.")
+        except Exception as ex:
+            _snack_err(f"Error creando plantilla: {ex}")
+
+    picker_import = ft.FilePicker(on_result=on_pick_import_result)
+    picker_export = ft.FilePicker(on_result=on_pick_export_path)
+    picker_template = ft.FilePicker(on_result=on_pick_template_path)
+
+    page.overlay.extend([picker_import, picker_export, picker_template])
 
 
 
@@ -1498,7 +1615,40 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
                     ft.Row(
                         [
                             ft.Text("Pacientes registrados", size=20, weight="bold"),
-                            buscador,
+                            ft.Row(
+                                [
+                                    buscador,
+                                    ft.OutlinedButton(
+                                        "Plantilla",
+                                        icon=ft.Icons.DESCRIPTION_OUTLINED,
+                                        tooltip="Descargar plantilla vacía para importar",
+                                        on_click=lambda ev: picker_template.save_file(
+                                            file_name="plantilla_pacientes.xlsx",
+                                            allowed_extensions=["xlsx"],
+                                        ),
+                                    ),
+                                    ft.OutlinedButton(
+                                        "Exportar",
+                                        icon=ft.Icons.FILE_DOWNLOAD,
+                                        tooltip="Exportar todos los pacientes a Excel",
+                                        on_click=lambda ev: picker_export.save_file(
+                                            file_name="pacientes_export.xlsx",
+                                            allowed_extensions=["xlsx"],
+                                        ),
+                                    ),
+                                    ft.FilledButton(
+                                        "Importar",
+                                        icon=ft.Icons.FILE_UPLOAD,
+                                        tooltip="Importar pacientes desde Excel",
+                                        on_click=lambda ev: picker_import.pick_files(
+                                            allow_multiple=False,
+                                            allowed_extensions=["xlsx"],
+                                        ),
+                                    ),
+                                ],
+                                spacing=8,
+                                wrap=True,
+                            ),
                         ],
                         alignment="spaceBetween",
                         wrap=True,
