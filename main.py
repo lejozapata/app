@@ -1,12 +1,12 @@
 import flet as ft
-from db import init_db
-from admin_view import build_admin_view
-from agenda_view import build_agenda_view
-from pacientes_view import build_pacientes_view
-from facturas_view import build_facturas_view
-from historia_view import build_historia_view
-from finanzas_view import build_finanzas_view
-from citas_tabla_view import build_citas_tabla_view
+from .db import init_db
+from .admin_view import build_admin_view
+from .agenda_view import build_agenda_view
+from .pacientes_view import build_pacientes_view
+from .facturas_view import build_facturas_view
+from .historia_view import build_historia_view
+from .finanzas_view import build_finanzas_view
+from .citas_tabla_view import build_citas_tabla_view
 
 
 def main(page: ft.Page):
@@ -107,9 +107,9 @@ def main(page: ft.Page):
     )
 
 
-if __name__ == "__main__":
-    ft.app(
-        target=main,
-        assets_dir="../data",
-        view=ft.AppView.FLET_APP,  # escritorio
-    )
+# if __name__ == "__main__":
+#     ft.app(
+#         target=main,
+#         assets_dir="../data",
+#         view=ft.AppView.FLET_APP,  # escritorio
+#     )

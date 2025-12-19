@@ -1,11 +1,11 @@
 from datetime import date, datetime
 from typing import Dict, Any, List
-from historia_pdf import generar_pdf_historia
-from markdown_editor import MarkdownEditor
+from .historia_pdf import generar_pdf_historia
+from .markdown_editor import MarkdownEditor
 
 import flet as ft
 
-from db import (
+from .db import (
     listar_pacientes,
     obtener_paciente,
     obtener_historia_clinica,
@@ -372,6 +372,7 @@ def build_historia_view(page: ft.Page) -> ft.Control:
         preview_width=350,
         min_lines=4,
         max_lines=12,
+        page=page,
     )
     md_editor.visible = False
 

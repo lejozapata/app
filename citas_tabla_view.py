@@ -1,7 +1,7 @@
 import flet as ft
 from datetime import date, datetime, timedelta
 
-from db import listar_citas_con_paciente_rango, eliminar_cita
+from .db import listar_citas_con_paciente_rango, eliminar_cita
 
 
 def _month_start(d: date) -> date:

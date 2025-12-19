@@ -1,7 +1,7 @@
 import os
 import smtplib
 from email.message import EmailMessage
-from notificaciones_email import (
+from .notificaciones_email import (
     enviar_correo_cita,
     enviar_correo_cancelacion,
     ConfigSMTPIncompleta,
@@ -10,9 +10,9 @@ import flet as ft
 from datetime import date, datetime, timedelta
 import threading
 import urllib.parse
-from citas_tabla_view import build_citas_tabla_view
+from .citas_tabla_view import build_citas_tabla_view
 
-from db import (
+from .db import (
     obtener_horarios_atencion,
     listar_pacientes,
     listar_servicios,

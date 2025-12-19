@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 from datetime import date, datetime, timedelta
 import os
+import sys
 
 
 # ----------------- Reglas de negocio de citas -----------------
@@ -29,11 +30,36 @@ ESTADOS_CITA: Dict[str, str] = {
 
 
 # Ruta del archivo de base de datos: ../data/sara_psico.db
-BASE_DIR = Path(__file__).resolve().parents[1]
-DATA_DIR = BASE_DIR / "data"
-DATA_DIR.mkdir(exist_ok=True)
+def get_base_dir() -> Path:
+    # Si el wrapper lo setea, perfecto.
+    env = os.environ.get("SARA_BASE_DIR")
+    if env:
+        return Path(env)
 
+    # DEV: base = root del repo (app/db.py -> parents[1])
+    repo_base = Path(__file__).resolve().parents[1]
+    if (repo_base / "data").exists():
+        return repo_base
+
+    # EXE: fallback a carpeta Roaming donde Flet instala "app"
+    roaming = Path(os.environ.get("APPDATA", str(repo_base)))
+    # OJO: esto depende del company + project que usaste en build
+    candidate = roaming / "Your Company" / "SaraPsicologa" / "flet" / "app"
+    return candidate
+
+# BASE_DIR = get_base_dir()
+# DATA_DIR = BASE_DIR / "data"
+# DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# DB_PATH = DATA_DIR / "sara_psico.db"
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]  # .../flet/app  (packaged) o E:/SaraPsicologa (dev)
+DATA_DIR = PROJECT_ROOT / "data"
 DB_PATH = DATA_DIR / "sara_psico.db"
+SECRET_KEY_PATH = DATA_DIR / ".secret.key"
+IMAGES_DIR = DATA_DIR / "imagenes"
+FACTURAS_DIR = DATA_DIR / "facturas_pdf"
+HISTORIAS_DIR = DATA_DIR / "historias_pdf"
 
 
 def get_connection() -> sqlite3.Connection:
@@ -3301,67 +3327,67 @@ if __name__ == "__main__":
     print("Tablas listas.")
 
     # ---------------- Datos de prueba (idempotentes) ----------------
-    try:
-        conn = get_connection()
-        cur = conn.cursor()
+    # try:
+    #     conn = get_connection()
+    #     cur = conn.cursor()
 
-        # Profesional (config id=1)
-        cur.execute(
-            """
-            INSERT OR IGNORE INTO configuracion_profesional (id, nombre_profesional, hora_inicio, hora_fin, dias_atencion, direccion, zona_horaria, telefono, email)
-            VALUES (1, 'Sara Psicóloga', '08:00', '18:00', 'Lunes,Martes,Miercoles,Jueves,Viernes', 'Consultorio', 'America/Bogota', '', '');
-            """
-        )
+    #     # Profesional (config id=1)
+    #     cur.execute(
+    #         """
+    #         INSERT OR IGNORE INTO configuracion_profesional (id, nombre_profesional, hora_inicio, hora_fin, dias_atencion, direccion, zona_horaria, telefono, email)
+    #         VALUES (1, 'Sara Psicóloga', '08:00', '18:00', 'Lunes,Martes,Miercoles,Jueves,Viernes', 'Consultorio', 'America/Bogota', '', '');
+    #         """
+    #     )
 
-        # Empresa convenio de prueba
-        cur.execute(
-            "INSERT OR IGNORE INTO empresas_convenio (nombre) VALUES ('Empresa Prueba S.A');"
-        )
-        cur.execute("SELECT id FROM empresas_convenio WHERE nombre = 'Empresa Prueba S.A' LIMIT 1;")
-        emp_id = cur.fetchone()[0]
+    #     # Empresa convenio de prueba
+    #     cur.execute(
+    #         "INSERT OR IGNORE INTO empresas_convenio (nombre) VALUES ('Empresa Prueba S.A');"
+    #     )
+    #     cur.execute("SELECT id FROM empresas_convenio WHERE nombre = 'Empresa Prueba S.A' LIMIT 1;")
+    #     emp_id = cur.fetchone()[0]
 
-        # Servicios de prueba
-        # Particular
-        cur.execute(
-            """
-            INSERT OR IGNORE INTO servicios (nombre, modalidad, precio, empresa, activo)
-            VALUES ('Atención Psicológica', 'particular', 110000, NULL, 1);
-            """
-        )
-        # Convenio (empresa por nombre)
-        cur.execute(
-            """
-            INSERT OR IGNORE INTO servicios (nombre, modalidad, precio, empresa, activo)
-            VALUES ('Atención Convenio', 'convenio', 85000, 'Empresa Prueba S.A', 1);
-            """
-        )
+    #     # Servicios de prueba
+    #     # Particular
+    #     cur.execute(
+    #         """
+    #         INSERT OR IGNORE INTO servicios (nombre, modalidad, precio, empresa, activo)
+    #         VALUES ('Atención Psicológica', 'particular', 110000, NULL, 1);
+    #         """
+    #     )
+    #     # Convenio (empresa por nombre)
+    #     cur.execute(
+    #         """
+    #         INSERT OR IGNORE INTO servicios (nombre, modalidad, precio, empresa, activo)
+    #         VALUES ('Atención Convenio', 'convenio', 85000, 'Empresa Prueba S.A', 1);
+    #         """
+    #     )
 
-        # Paciente de prueba
-        cur.execute(
-            """
-            INSERT OR IGNORE INTO pacientes (
-            documento, 
-            tipo_documento, 
-            nombre_completo, 
-            fecha_nacimiento, 
-            sexo, 
-            estado_civil, 
-            escolaridad,
-            eps,
-            direccion, 
-            email,
-            indicativo_pais, 
-            telefono,
-            contacto_emergencia_nombre, 
-            contacto_emergencia_telefono,
-            observaciones 
-            )
-            VALUES ('1212121', 'CC', 'Pruebin Pruebas', '1990-01-01', 'M', 'Unión Libre', 'Pendejo', 'Sura', 'Calle falsa', 'lejozapata@gmail.com', '57', '3217769952', '', '', '');
-            """
-        )
+    #     # Paciente de prueba
+    #     cur.execute(
+    #         """
+    #         INSERT OR IGNORE INTO pacientes (
+    #         documento, 
+    #         tipo_documento, 
+    #         nombre_completo, 
+    #         fecha_nacimiento, 
+    #         sexo, 
+    #         estado_civil, 
+    #         escolaridad,
+    #         eps,
+    #         direccion, 
+    #         email,
+    #         indicativo_pais, 
+    #         telefono,
+    #         contacto_emergencia_nombre, 
+    #         contacto_emergencia_telefono,
+    #         observaciones 
+    #         )
+    #         VALUES ('1212121', 'CC', 'Pruebin Pruebas', '1990-01-01', 'M', 'Unión Libre', 'Pendejo', 'Sura', 'Calle falsa', 'lejozapata@gmail.com', '57', '3217769952', '', '', '');
+    #         """
+    #     )
 
-        conn.commit()
-        conn.close()
-        print("Datos de prueba insertados.")
-    except Exception as e:
-        print(f"No se pudieron insertar datos de prueba: {e}")
+    #     conn.commit()
+    #     conn.close()
+    #     print("Datos de prueba insertados.")
+    # except Exception as e:
+    #     print(f"No se pudieron insertar datos de prueba: {e}")

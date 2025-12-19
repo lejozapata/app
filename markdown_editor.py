@@ -1,5 +1,11 @@
 import flet as ft
 from typing import Optional
+import re
+
+try:
+    from spellchecker import SpellChecker
+except Exception:
+    SpellChecker = None
 
 
 class MarkdownEditor(ft.Column):
@@ -15,14 +21,18 @@ class MarkdownEditor(ft.Column):
     """
 
     def __init__(
-        self,
-        label: str = "Contenido enriquecido",
-        width: int = 800,
-        preview_width: int = 350,
-        min_lines: int = 4,
-        max_lines: int = 12,
-        hint_text: Optional[str] = None,
+    self,
+    label: str = "Contenido enriquecido",
+    width: int = 800,
+    preview_width: int = 350,
+    min_lines: int = 4,
+    max_lines: int = 12,
+    hint_text: Optional[str] = None,
+    page: Optional[ft.Page] = None,   # 👈 NUEVO
+
     ):
+        
+        
         super().__init__(spacing=6)
 
         self.label = label
@@ -45,6 +55,13 @@ class MarkdownEditor(ft.Column):
             width=self.width,
             hint_text=self.hint_text,
         )
+        
+        self._page_ref = page
+        self.spell = SpellChecker(language="es") if SpellChecker else None
+
+        # Opcional: palabras que no quieres que marque
+        if self.spell:
+            self.spell.word_frequency.load_words(["SURA", "EPS", "CIE10", "DSM"])
 
         # Vista previa Markdown
         self.preview = ft.Markdown(
@@ -73,6 +90,11 @@ class MarkdownEditor(ft.Column):
                     icon=ft.Icons.HIGHLIGHT,
                     tooltip="Insertar ==resaltado==",
                     on_click=lambda e: self._insert_snippet("highlight"),
+                ),
+                ft.IconButton(
+                    icon=ft.Icons.SPELLCHECK,
+                    tooltip="Revisar ortografía",
+                    on_click=self._revisar_ortografia,
                 ),
             ],
             spacing=4,
@@ -114,7 +136,8 @@ class MarkdownEditor(ft.Column):
 
     def set_value(self, value: str):
         self.txt.value = value or ""
-        self.txt.update()
+        if self.txt.page is not None:
+            self.txt.update()
         self._update_preview()
 
     # ---------------- Inserción de plantillas ----------------
@@ -163,6 +186,98 @@ class MarkdownEditor(ft.Column):
             self.txt.update()
         except Exception:
             pass
+        
+        
+    def _get_page(self) -> Optional[ft.Page]:
+        if getattr(self, "_page_ref", None) is not None:
+            return self._page_ref
+        try:
+            return self.page
+        except Exception:
+            return None
+
+    def _revisar_ortografia(self, e=None):
+        page = self._get_page()
+        if page is None:
+            return
+        
+        # Debug opcional (ya sin error)
+        page.snack_bar = ft.SnackBar(content=ft.Text("Click ortografía OK"))
+        page.snack_bar.open = True
+        page.update()
+
+        if not self.spell:
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text("Revisión ortográfica no disponible. Instala: pip install pyspellchecker")
+            )
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        texto = (self.txt.value or "").strip()
+        if not texto:
+            page.snack_bar = ft.SnackBar(content=ft.Text("No hay texto para revisar."))
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        palabras = re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+", texto)
+        desconocidas = sorted(set(self.spell.unknown([p.lower() for p in palabras])))
+
+        if not desconocidas:
+            page.snack_bar = ft.SnackBar(content=ft.Text("No encontré errores ortográficos."))
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        sugerencias = []
+        for w in desconocidas[:80]:  # tope para no saturar UI
+            corr = self.spell.correction(w)
+            if corr and corr != w:
+                sugerencias.append((w, corr))
+
+        if not sugerencias:
+            page.snack_bar = ft.SnackBar(content=ft.Text("Encontré palabras dudosas, pero sin sugerencias claras."))
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        lista = ft.Column(
+            controls=[ft.Row([ft.Text(f"{w}  →  {c}")]) for w, c in sugerencias],
+            scroll=ft.ScrollMode.AUTO,
+            height=300,
+            width=520,
+        )
+
+        def aplicar(ev):
+            nuevo = texto
+            for w, c in sugerencias:
+                nuevo = re.sub(rf"\b{re.escape(w)}\b", c, nuevo, flags=re.IGNORECASE)
+
+            self.set_value(nuevo)  # reutiliza tu API pública (actualiza preview)
+
+            page.dialog.open = False
+            page.update()
+
+            page.snack_bar = ft.SnackBar(content=ft.Text("Correcciones aplicadas."))
+            page.snack_bar.open = True
+            page.update()
+        
+        def _cerrar_dialogo(ev):
+            page.dialog.open = False
+            page.update()
+
+        dlg = ft.AlertDialog(
+            title=ft.Text("Revisión ortográfica"),
+            content=lista,
+            actions=[
+                ft.TextButton("Cerrar", on_click=_cerrar_dialogo),
+                ft.ElevatedButton("Aplicar correcciones", icon=ft.Icons.CHECK, on_click=aplicar),
+            ],
+        )
+        page.dialog = dlg
+        page.dialog.open = True
+        page.update()
 
     # ---------------- Vista previa ----------------
 

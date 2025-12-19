@@ -4,7 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, available_timezones
 
-from db import (
+from .db import (
     obtener_configuracion_profesional,
     guardar_configuracion_profesional,
     obtener_horarios_atencion,

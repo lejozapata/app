@@ -12,7 +12,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 from openpyxl.styles import Font, PatternFill
 from openpyxl.worksheet.datavalidation import DataValidation
 
-from db import (
+from .db import (
     crear_paciente, 
     actualizar_paciente, 
     obtener_paciente, 

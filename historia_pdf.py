@@ -16,8 +16,8 @@ from reportlab.platypus import (
 )
 from reportlab.lib.enums import TA_LEFT, TA_CENTER
 from reportlab.lib import colors
-
-from db import (
+from .fechas import calcular_edad
+from .db import (
     DB_PATH,
     obtener_paciente,
     obtener_historia_clinica,
@@ -245,6 +245,15 @@ def generar_pdf_historia(
     story.append(Spacer(1, 4))
 
     def _val(campo: str):
+        # Alias / compatibilidad de nombres
+        if campo == "correo":
+            v = pac.get("email") or pac.get("correo")
+            return v if v not in (None, "", "None") else "-"
+
+        # Campo calculado
+        if campo == "edad":
+            return calcular_edad(pac.get("fecha_nacimiento"))
+
         v = pac.get(campo)
         return v if v not in (None, "", "None") else "-"
 
@@ -263,7 +272,7 @@ def generar_pdf_historia(
             Paragraph("<b>Estado civil:</b>", SMALL_STYLE),
             Paragraph(_val("estado_civil"), SMALL_STYLE),
             Paragraph("<b>Correo:</b>", SMALL_STYLE),
-            Paragraph(_val("correo"), SMALL_STYLE),
+            Paragraph(_val("email"), SMALL_STYLE),
         ],
         [
             Paragraph("<b>Fecha nacimiento:</b>", SMALL_STYLE),

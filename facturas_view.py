@@ -4,8 +4,8 @@ from typing import Dict, Any, Optional, List
 
 import flet as ft
 
-from facturas_pdf import generar_pdf_factura
-from db import (
+from .facturas_pdf import generar_pdf_factura
+from .db import (
     listar_empresas_convenio,
     listar_pacientes,
     crear_factura_convenio,

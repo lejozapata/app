@@ -3,14 +3,14 @@ import json
 from pathlib import Path
 from datetime import datetime, date
 import flet as ft
-from pacientes_excel import (
+from .pacientes_excel import (
     crear_plantilla_pacientes,
     exportar_pacientes_a_excel,
     importar_pacientes_desde_excel,
     validar_archivo_pacientes_excel,
     PlantillaExcelInvalidaError,
 )
-from db import (
+from .db import (
     crear_paciente,
     listar_pacientes,
     obtener_paciente,

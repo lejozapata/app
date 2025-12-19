@@ -16,7 +16,7 @@ from reportlab.platypus import (
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.utils import ImageReader
 
-from db import (
+from .db import (
     DB_PATH,
     obtener_factura_convenio,
     obtener_configuracion_profesional,

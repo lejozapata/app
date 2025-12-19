@@ -1,7 +1,7 @@
 import flet as ft
 from datetime import date, datetime
 
-from db import (
+from .db import (
     resumen_financiero_mensual,
     registrar_gasto_financiero,
     listar_gastos_financieros,
