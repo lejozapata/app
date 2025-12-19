@@ -2276,11 +2276,12 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             )
 
             return ft.Container(
-                width=160,   # el mismo ancho que el resto de slots
+                width=DAY_COL_W,   # el mismo ancho que el resto de slots
                 height=50,
                 bgcolor=bgcolor,
                 border=ft.border.all(0.5, ft.Colors.GREY_400),
                 padding=4,
+                margin=ft.margin.only(right=4),
                 content=ft.Row(
                     [
                         popup_agregar,
@@ -2294,11 +2295,12 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
 
         return ft.Container(
-        width=160,
+        width=DAY_COL_W,
         height=50,
         bgcolor=bgcolor,
         border=ft.border.all(0.5, ft.Colors.GREY_400),
         padding=1,
+        margin=ft.margin.only(right=4),
         content=ft.Column(
             bloques,
             spacing=2,
@@ -2308,6 +2310,11 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
     )
 
     # ----------------- AGENDA SEMANAL -------------------
+    
+    TIME_COL_W = 70
+    DAY_COL_W  = 160
+    RIGHT_PAD_W = 10  # si realmente lo necesitas
+    COL_GAP = 6   # separación visual entre columnas (px)
 
     def dibujar_calendario_semanal():
         dias = obtener_dias_semana(semana_lunes["value"])
@@ -2374,7 +2381,7 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             f"- {DIAS_SEMANA[fin.weekday()]} {fin.day:02d}/{fin.month:02d}/{fin.year}"
         )
 
-        encabezado_cells = [ft.Container(width=70)]
+        encabezado_cells = [ft.Container(width=TIME_COL_W)]
         for d in dias:
             encabezado_cells.append(
                 ft.Container(
@@ -2383,12 +2390,12 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
                         weight="bold",
                     ),
                     alignment=ft.alignment.center,
-                    width=150,
+                    width=DAY_COL_W,
                     padding=5,
                 )
             )
-        encabezado_cells.append(ft.Container(width=10))
-        filas.append(ft.Row(encabezado_cells))
+        encabezado_cells.append(ft.Container(width=RIGHT_PAD_W))
+        filas.append(ft.Row(encabezado_cells, spacing=0))
 
         for m in minutos:
             h = m // 60
@@ -2397,7 +2404,7 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
             cells = [
                 ft.Container(
-                    width=80,
+                    width=TIME_COL_W,
                     content=ft.Text(etiqueta_hora),
                     alignment=ft.alignment.center_right,
                     padding=5,
@@ -2412,8 +2419,8 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
                         bloqueos_por_celda.get((d, m), []),
                     )
                 )
-            cells.append(ft.Container(width=10))
-            filas.append(ft.Row(cells))
+            cells.append(ft.Container(width=RIGHT_PAD_W))
+            filas.append(ft.Row(cells, spacing=0))
 
         calendario_semanal_col.controls = filas
         page.update()
