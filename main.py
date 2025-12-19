@@ -7,6 +7,7 @@ from .facturas_view import build_facturas_view
 from .historia_view import build_historia_view
 from .finanzas_view import build_finanzas_view
 from .citas_tabla_view import build_citas_tabla_view
+from .ui_config import BRAND_BG, BRAND_PRIMARY, TEXT_MAIN
 
 
 def main(page: ft.Page):
@@ -14,6 +15,20 @@ def main(page: ft.Page):
     # Tamaño inicial de la ventana
     page.window.width = 1366
     page.window.height = 768
+    page.bgcolor = BRAND_BG
+    page.theme_mode = ft.ThemeMode.LIGHT
+    
+    page.theme = ft.Theme(
+        color_scheme=ft.ColorScheme(
+            primary=BRAND_PRIMARY,
+            on_primary="#ffffff",
+            surface="#ffffff",
+            on_surface=TEXT_MAIN,
+            background=BRAND_BG,
+            on_background=TEXT_MAIN,
+        ),
+        use_material3=True,
+    )
 
     # Tamaño mínimo para que no se deforme el layout
     #page.window.min_width = 1100
