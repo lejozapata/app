@@ -1722,4 +1722,6 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
             listado,
         ],
         spacing=20,
+        expand=True,
+        scroll=ft.ScrollMode.AUTO,
     )

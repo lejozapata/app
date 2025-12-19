@@ -17,6 +17,7 @@ from reportlab.platypus import (
 from reportlab.lib.enums import TA_LEFT, TA_CENTER
 from reportlab.lib import colors
 from .fechas import calcular_edad
+from .paths import get_historias_dir
 from .db import (
     DB_PATH,
     obtener_paciente,
@@ -33,8 +34,10 @@ def _get_paths_historia():
     """Devuelve (directorio_historia, ruta_logo) usando la misma base que facturas."""
     data_dir = os.path.dirname(DB_PATH)
     img_dir = os.path.join(data_dir, "imagenes")
-    historias_dir = os.path.join(data_dir, "historias_pdf")
-    os.makedirs(historias_dir, exist_ok=True)
+    #historias_dir = os.path.join(data_dir, "historias_pdf")
+    #os.makedirs(historias_dir, exist_ok=True)
+
+    historias_dir = get_historias_dir()  # 👈 Mis Documentos
 
     logo_path = os.path.join(img_dir, "logo.png")
     return historias_dir, logo_path

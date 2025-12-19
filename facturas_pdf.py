@@ -1,5 +1,6 @@
 import os
 from datetime import datetime
+from .paths import get_facturas_dir
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
@@ -32,8 +33,10 @@ from .db import (
 def _get_paths():
     data_dir = os.path.dirname(DB_PATH)
     img_dir = os.path.join(data_dir, "imagenes")
-    facturas_dir = os.path.join(data_dir, "facturas_pdf")
-    os.makedirs(facturas_dir, exist_ok=True)
+    #facturas_dir = os.path.join(data_dir, "facturas_pdf")
+    #os.makedirs(facturas_dir, exist_ok=True)
+
+    facturas_dir = get_facturas_dir()  # 👈 Mis Documentos
 
     logo_path = os.path.join(img_dir, "logo.png")
     firma_path = os.path.join(img_dir, "firma.png")

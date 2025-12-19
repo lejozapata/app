@@ -568,6 +568,7 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
                             ),
                         ],
                         spacing=10,
+                        wrap=True
                     ),
                     ft.Divider(),
                     ft.Text("Paciente", weight="bold"),
@@ -579,6 +580,7 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
                             txt_paciente_nombre,
                         ],
                         spacing=10,
+                        wrap=True
                     ),
                     ft.Divider(),
                     ft.Text("Detalle", weight="bold"),
@@ -593,6 +595,7 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
                             txt_total,
                         ],
                         spacing=10,
+                        wrap=True
                     ),
                     ft.Row([txt_forma_pago], spacing=10),
                     lbl_mensaje,
@@ -602,6 +605,7 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
                     ),
                 ],
                 spacing=10,
+
             ),
         ),
     )
@@ -614,11 +618,16 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
             [
                 ft.Text("Facturas de convenio", size=18, weight="bold"),
                 ft.Container(
-                    height=260,  # 👉 alto fijo de la tabla
-                    content=ft.Column(
-                        [facturas_table],
-                        expand=True,
-                        scroll=ft.ScrollMode.AUTO,  # 👉 scroll interno
+                    height=260,
+                    content=ft.Row(  # 👈 wrapper horizontal
+                        [
+                            ft.Column(
+                                [facturas_table],
+                                expand=True,
+                                scroll=ft.ScrollMode.AUTO,  # vertical (ya lo tenías)
+                            )
+                        ],
+                        scroll=ft.ScrollMode.AUTO,  # 👈 horizontal
                     ),
                 ),
             ],
@@ -798,12 +807,12 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
                     content=ft.Column(
                         [
                             ft.Text("Detalle de la empresa", weight="bold"),
-                            ft.Row([txt_emp_nombre, txt_emp_nit], spacing=10),
-                            ft.Row([txt_emp_direccion], spacing=10),
-                            ft.Row([txt_emp_ciudad, txt_emp_pais], spacing=10),
-                            ft.Row([txt_emp_telefono, txt_emp_email], spacing=10),
-                            ft.Row([txt_emp_contacto], spacing=10),
-                            ft.Row([chk_emp_activa], spacing=10),
+                            ft.Row([txt_emp_nombre, txt_emp_nit], spacing=10, wrap=True),
+                            ft.Row([txt_emp_direccion], spacing=10, wrap=True),
+                            ft.Row([txt_emp_ciudad, txt_emp_pais], spacing=10, wrap=True),
+                            ft.Row([txt_emp_telefono, txt_emp_email], spacing=10, wrap=True),
+                            ft.Row([txt_emp_contacto], spacing=10, wrap=True),
+                            ft.Row([chk_emp_activa], spacing=10, wrap=True),
                             ft.Row(
                                 [
                                     ft.TextButton(
@@ -831,6 +840,7 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
                             empresas_table,
                         ],
                         spacing=10,
+                        
                     ),
                 )
             ),

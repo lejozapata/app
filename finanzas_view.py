@@ -1100,6 +1100,7 @@ def build_finanzas_view(page: ft.Page) -> ft.Control:
         spacing=0,  # ya controlamos el espacio con el container intermedio
         tight=True,  # <- clave: el Row se ajusta al contenido, no reparte toda la pantalla
         vertical_alignment=ft.CrossAxisAlignment.START,
+        scroll=ft.ScrollMode.AUTO,
     )
     
     # ======= Contenedores con scroll para tablas ==========

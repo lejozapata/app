@@ -2730,7 +2730,70 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
     panel_izquierdo.content.controls.append(btn_resumen_citas)
     
 
-    # ----------------- RENDER INICIAL -------------------
+        # --- Wrapper con scroll horizontal para el calendario semanal ---
+    # Mantiene scroll vertical dentro de calendario_semanal_col y habilita scroll horizontal cuando
+    # la semana completa no cabe (pantallas pequeñas / escalado Windows).
+    calendario_semanal_hscroll = ft.Row(
+        [ft.Container(content=calendario_semanal_col, expand=True)],
+        expand=True,
+        scroll=ft.ScrollMode.AUTO,
+    )
+
+    # --- Layout responsive por ancho de ventana ---
+    # < 650px: oculta panel izquierdo (deja todo el ancho a la agenda)
+    # 650-900px: muestra panel izquierdo colapsado (70px)
+    # >= 900px: respeta el estado del toggle (expandido/colapsado)
+    def _apply_responsive_layout():
+        try:
+            w = page.window_width or 0
+        except Exception:
+            w = 0
+
+        if w and w < 650:
+            panel_izquierdo.visible = False
+        else:
+            panel_izquierdo.visible = True
+
+            if w and w < 900:
+                # Forzar colapsado en pantallas medianas/pequeñas
+                panel_izquierdo.width = 70
+                mini_calendario_col.visible = False
+                btn_mes_anterior.visible = False
+                btn_mes_siguiente.visible = False
+                dd_mes.visible = False
+                dd_year.visible = False
+                toggle_btn.icon = ft.Icons.KEYBOARD_DOUBLE_ARROW_RIGHT
+                toggle_btn.tooltip = "Expandir panel"
+            else:
+                # Respeta el toggle del usuario
+                if panel_expandido["value"]:
+                    panel_izquierdo.width = 260
+                    mini_calendario_col.visible = True
+                    btn_mes_anterior.visible = True
+                    btn_mes_siguiente.visible = True
+                    dd_mes.visible = True
+                    dd_year.visible = True
+                    toggle_btn.icon = ft.Icons.KEYBOARD_DOUBLE_ARROW_LEFT
+                    toggle_btn.tooltip = "Colapsar panel"
+                else:
+                    panel_izquierdo.width = 70
+                    mini_calendario_col.visible = False
+                    btn_mes_anterior.visible = False
+                    btn_mes_siguiente.visible = False
+                    dd_mes.visible = False
+                    dd_year.visible = False
+                    toggle_btn.icon = ft.Icons.KEYBOARD_DOUBLE_ARROW_RIGHT
+                    toggle_btn.tooltip = "Expandir panel"
+
+    def _on_resize(e):
+        _apply_responsive_layout()
+        page.update()
+
+    page.on_resize = _on_resize
+
+    _apply_responsive_layout()
+
+# ----------------- RENDER INICIAL -------------------
 
     dibujar_calendario_semanal()
     dibujar_mini_calendario()
@@ -2739,7 +2802,7 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         [
             barra_controles,
             ft.Divider(),
-            calendario_semanal_col,
+            calendario_semanal_hscroll,
         ],
         expand=True,
     )

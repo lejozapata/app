@@ -12,8 +12,8 @@ from .citas_tabla_view import build_citas_tabla_view
 def main(page: ft.Page):
     page.title = "Gestión de Pacientes - Sara"
     # Tamaño inicial de la ventana
-    page.window.width = 1600
-    page.window.height = 1300
+    page.window.width = 1366
+    page.window.height = 768
 
     # Tamaño mínimo para que no se deforme el layout
     #page.window.min_width = 1100
