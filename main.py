@@ -1,4 +1,5 @@
 import flet as ft
+from pathlib import Path
 from .db import init_db
 from .admin_view import build_admin_view
 from .agenda_view import build_agenda_view
@@ -9,6 +10,7 @@ from .finanzas_view import build_finanzas_view
 from .citas_tabla_view import build_citas_tabla_view
 from .documentos_view import build_documentos_view
 from .ui_config import BRAND_BG, BRAND_PRIMARY, TEXT_MAIN
+
 
 
 def main(page: ft.Page):
@@ -30,6 +32,9 @@ def main(page: ft.Page):
         ),
         use_material3=True,
     )
+    
+    icon_path = Path(__file__).resolve().parents[1] / "data" / "imagenes" / "icon.ico"
+    page.window.icon = str(icon_path)
 
     # Tamaño mínimo para que no se deforme el layout
     #page.window.min_width = 1100
