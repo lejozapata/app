@@ -7,6 +7,7 @@ from .facturas_view import build_facturas_view
 from .historia_view import build_historia_view
 from .finanzas_view import build_finanzas_view
 from .citas_tabla_view import build_citas_tabla_view
+from .documentos_view import build_documentos_view
 from .ui_config import BRAND_BG, BRAND_PRIMARY, TEXT_MAIN
 
 
@@ -78,9 +79,14 @@ def main(page: ft.Page):
         page.update()
     page.mostrar_historia_cb = mostrar_historia
     
-    def mostrar_citas_tabla(e=None):
-        body.content = build_citas_tabla_view(page)
+    #def mostrar_citas_tabla(e=None):
+    #    body.content = build_citas_tabla_view(page)
+    #    page.update()
+        
+    def mostrar_documentos(e=None):
+        body.content = build_documentos_view(page)
         page.update()
+    page.mostrar_documentos_cb = mostrar_documentos
 
 #
 
@@ -93,6 +99,7 @@ def main(page: ft.Page):
                     ft.ElevatedButton("Pacientes", on_click=mostrar_pacientes),
                     ft.ElevatedButton("Agendar", on_click=mostrar_agenda),
                     ft.ElevatedButton("Facturas", on_click=mostrar_facturas),
+                    ft.ElevatedButton("Documentos", on_click=mostrar_documentos),
                     ft.ElevatedButton("Finanzas", on_click=mostrar_finanzas),
                 ]
             ),

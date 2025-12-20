@@ -27,3 +27,9 @@ def get_historias_dir():
     historias = os.path.join(base, "Historias")
     os.makedirs(historias, exist_ok=True)
     return historias
+
+def get_documentos_dir():
+    base = get_user_documents_base()
+    documentos = os.path.join(base, "Documentos")
+    os.makedirs(documentos, exist_ok=True)
+    return documentos

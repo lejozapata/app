@@ -32,10 +32,10 @@ def _cargar_credenciales_gmail() -> tuple[str | None, str | None]:
       2) variables de entorno SARA_SMTP_USER / SARA_SMTP_PASSWORD
     """
     try:
-        from db import obtener_configuracion_gmail  # import local para evitar ciclos
+        from .db import obtener_configuracion_gmail  # import local para evitar ciclos
         cfg = obtener_configuracion_gmail()
         if cfg.get("habilitado") and cfg.get("gmail_user") and cfg.get("gmail_app_password"):
-            from crypto_utils import decrypt_str
+            from .crypto_utils import decrypt_str
             return (str(cfg.get("gmail_user")), decrypt_str(str(cfg.get("gmail_app_password"))))
     except Exception:
         # Si la BD no está disponible por algún motivo, caemos a env vars.
@@ -444,4 +444,158 @@ def enviar_correo_cancelacion(
         smtp.starttls()
         smtp.login(smtp_user, smtp_password)
         smtp.send_message(msg)
+
+
+#################################################
+# =======ENVIO DE DOCUMENTOS/CERTIFICADOS=======#
+#################################################
+
+# ----------------- Envío de documentos (PDF adjunto) -----------------
+from email.utils import formataddr
+from mimetypes import guess_type
+
+def _parse_recipients(raw: str) -> list[str]:
+    """
+    Acepta correos separados por ';' o ','.
+    Retorna lista limpia, sin vacíos.
+    """
+    if not raw:
+        return []
+    parts = raw.replace(",", ";").split(";")
+    emails = [p.strip() for p in parts if p.strip()]
+    return emails
+
+
+def enviar_correo_con_adjunto_pdf(
+    to_emails: list[str],
+    subject: str,
+    body_text: str,
+    body_html: str,
+    pdf_path: str,
+    cfg_profesional: Dict[str, Any],
+) -> None:
+    """
+    Envía un correo con adjunto PDF usando configuración SMTP ya existente.
+    """
+    if not to_emails:
+        return
+
+    if not pdf_path or not os.path.exists(pdf_path):
+        raise FileNotFoundError(f"No existe el adjunto: {pdf_path}")
+
+    smtp_user, smtp_password = _cargar_credenciales_gmail()
+    if not (SMTP_HOST and smtp_user and smtp_password):
+        raise ConfigSMTPIncompleta("Faltan credenciales SMTP (Gmail).")
+
+    nombre_prof = (cfg_profesional.get("nombre_profesional") or "Profesional").strip()
+    email_from = (cfg_profesional.get("email") or smtp_user or "").strip()
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = formataddr((nombre_prof, email_from))
+    msg["To"] = "; ".join(to_emails)
+
+    msg.set_content(body_text)
+    msg.add_alternative(body_html, subtype="html")
+
+    mime, _ = guess_type(pdf_path)
+    maintype, subtype = ("application", "pdf")
+    if mime and "/" in mime:
+        maintype, subtype = mime.split("/", 1)
+
+    with open(pdf_path, "rb") as f:
+        pdf_bytes = f.read()
+
+    msg.add_attachment(
+        pdf_bytes,
+        maintype=maintype,
+        subtype=subtype,
+        filename=os.path.basename(pdf_path),
+    )
+
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
+        smtp.starttls()
+        smtp.login(smtp_user, smtp_password)
+        smtp.send_message(msg)
+
+
+def construir_email_consentimiento(
+    nombre_paciente: str,
+) -> tuple[str, str, str]:
+    """
+    Retorna (subject, body_text, body_html) para consentimiento.
+    """
+    subject = f"Consentimiento informado – {nombre_paciente}".strip(" –")
+
+    body_text = (
+        f"Buenas tardes {nombre_paciente},\n\n"
+        "Adjunto encontrarás el consentimiento informado para el proceso de atención psicológica.\n"
+        "Te agradezco leerlo con calma y, si estás de acuerdo, devolverlo firmado.\n\n"
+        "Si tienes alguna pregunta, con gusto la resolvemos.\n\n"
+        "Saludos cordiales."
+    )
+
+    body_html = f"""
+    <html>
+      <body style="font-family: Arial, sans-serif; background:#f5f5f5; padding:16px;">
+        <div style="max-width:640px; margin:0 auto; background:#fff; border-radius:10px; padding:18px 20px; box-shadow:0 2px 10px rgba(0,0,0,.06);">
+          <p style="margin:0 0 12px 0;">Buenas tardes <b>{nombre_paciente}</b>,</p>
+          <p style="margin:0 0 12px 0;">
+            Adjunto encontrarás el <b>consentimiento informado</b> para el proceso de atención psicológica.
+            Te agradezco leerlo con calma y, si estás de acuerdo, devolverlo firmado.
+          </p>
+          <p style="margin:0 0 12px 0;">Si tienes alguna pregunta, con gusto la resolvemos.</p>
+          <p style="margin:0;">Saludos cordiales.</p>
+          <hr style="border:none; border-top:1px solid #eee; margin:16px 0;" />
+          <p style="font-size:11px; color:#777; margin:0;">
+            Este mensaje y sus adjuntos pueden contener información confidencial. Si lo recibiste por error,
+            por favor elimínalo e infórmanos.
+          </p>
+        </div>
+      </body>
+    </html>
+    """
+    return subject, body_text, body_html
+
+
+def construir_email_certificado_asistencia(
+    nombre_paciente: str,
+    fecha_cita_humano: str,
+) -> tuple[str, str, str]:
+    """
+    Retorna (subject, body_text, body_html) para certificado.
+    fecha_cita_humano: texto tipo '27 de enero de 2025' o similar.
+    """
+    subject = f"Certificado de asistencia – {nombre_paciente}".strip(" –")
+
+    body_text = (
+        f"Buenas tardes,\n\n"
+        f"Se adjunta el certificado de asistencia de {nombre_paciente}"
+        + (f" correspondiente a la consulta del {fecha_cita_humano}.\n\n" if fecha_cita_humano else ".\n\n")
+        + "Quedo atenta/o a cualquier inquietud.\n\n"
+        "Saludos cordiales."
+    )
+
+    body_html = f"""
+    <html>
+      <body style="font-family: Arial, sans-serif; background:#f5f5f5; padding:16px;">
+        <div style="max-width:640px; margin:0 auto; background:#fff; border-radius:10px; padding:18px 20px; box-shadow:0 2px 10px rgba(0,0,0,.06);">
+          <p style="margin:0 0 12px 0;">Buenas tardes,</p>
+          <p style="margin:0 0 12px 0;">
+            Se adjunta el <b>certificado de asistencia</b> de <b>{nombre_paciente}</b>
+            {f"correspondiente a la consulta del <b>{fecha_cita_humano}</b>." if fecha_cita_humano else "."}
+          </p>
+          <p style="margin:0 0 12px 0;">Quedo atenta/o a cualquier inquietud.</p>
+          <p style="margin:0;">Saludos cordiales.</p>
+
+          <hr style="border:none; border-top:1px solid #eee; margin:16px 0;" />
+          <p style="font-size:11px; color:#777; margin:0;">
+            Este documento contiene información confidencial y es de uso exclusivo para fines relacionados con el proceso terapéutico.
+            Se recomienda almacenarlo de forma segura y no modificar su contenido.
+          </p>
+        </div>
+      </body>
+    </html>
+    """
+    return subject, body_text, body_html
 

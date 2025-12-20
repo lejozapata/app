@@ -439,7 +439,23 @@ def init_db() -> None:
         """
     )
 
-
+    
+    # Tabla para guardar información de archivos generados
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS documentos_generados (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tipo TEXT NOT NULL CHECK (tipo IN ('consentimiento', 'certificado_asistencia')),
+            documento_paciente TEXT NOT NULL,
+            cita_id INTEGER,
+            path TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now','localtime')),
+            updated_at TEXT DEFAULT (datetime('now','localtime')),
+            UNIQUE(tipo, documento_paciente, cita_id)
+        );
+        """
+    )
+    
     conn.commit()
     conn.close()
 
@@ -3258,7 +3274,7 @@ def guardar_configuracion_gmail(cfg: dict) -> None:
 
     # Cifrar si es nueva y aún no está cifrada
     if new_password and not str(new_password).startswith("enc::"):
-        from crypto_utils import encrypt_str
+        from .crypto_utils import encrypt_str
         new_password = encrypt_str(str(new_password))
 
     habilitado = cfg.get("habilitado")
@@ -3312,6 +3328,67 @@ def obtener_cita_con_paciente(cita_id: int):
     row = cur.fetchone()
     conn.close()
     return row
+
+def listar_citas_por_paciente(documento_paciente: str) -> List[sqlite3.Row]:
+    """
+    Lista citas de un paciente, ordenadas por fecha/hora descendente (más reciente primero).
+    Devuelve sqlite3.Row con columnas de la tabla citas.
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT *
+        FROM citas
+        WHERE documento_paciente = ?
+        ORDER BY datetime(fecha_hora) DESC, id DESC;
+        """,
+        (documento_paciente,),
+    )
+
+    filas = cur.fetchall()
+    conn.close()
+    return filas
+
+####### Funciones para documentos PDF #######
+
+def upsert_documento_generado(tipo: str, documento_paciente: str, path: str, cita_id: int | None = None) -> None:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO documentos_generados (tipo, documento_paciente, cita_id, path, updated_at)
+        VALUES (?, ?, ?, ?, datetime('now','localtime'))
+        ON CONFLICT(tipo, documento_paciente, cita_id) DO UPDATE SET
+            path = excluded.path,
+            updated_at = datetime('now','localtime');
+        """,
+        (tipo, documento_paciente, cita_id, path),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_documento_generado(tipo: str, documento_paciente: str, cita_id: int | None = None) -> str | None:
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT path
+        FROM documentos_generados
+        WHERE tipo = ? AND documento_paciente = ? AND
+              ( (cita_id IS NULL AND ? IS NULL) OR (cita_id = ?) )
+        ORDER BY updated_at DESC
+        LIMIT 1;
+        """,
+        (tipo, documento_paciente, cita_id, cita_id),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row["path"] if row else None
 
 
 
