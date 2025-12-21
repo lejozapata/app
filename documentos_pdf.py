@@ -272,6 +272,7 @@ def generar_pdf_consentimiento(
     documento_paciente: str,
     abrir: bool = True,
     force: bool = False,
+    incluir_firma_profesional: bool = False,  # OFF por defecto
 ) -> str:
     pac_row = obtener_paciente(documento_paciente)
     if not pac_row:
@@ -468,7 +469,7 @@ def generar_pdf_consentimiento(
     story.append(Spacer(1, 16))
 
     # ✅ Firmas con firma alt en el bloque "Profesional"
-    firma_img = _image_scaled(firma_usar, 40, 14)  # tamaño adecuado para colocarlo sobre la línea
+    firma_img = _image_scaled(firma_usar, 40, 14) if incluir_firma_profesional else None # Se envía solo si se tiene el check
     profesional_nombre = cfg.get("nombre_profesional") or "Nombre Profesional"
     profesional_tp = cfg.get("tp") or ""
 
@@ -623,7 +624,7 @@ def generar_pdf_certificado_asistencia(
     story.append(Paragraph(texto, normal))
 
     # ✅ Espaciado “pro” para que no quede vacío (similar al de referencia)
-    story.append(Spacer(1, 80))
+    story.append(Spacer(1, 100))
 
    # Firma: un poco más pequeña y alineada a la izquierda, ANTES del bloque final
     firma_img = _image_scaled(firma_usar, 40, 14)  # ↓ tamaño

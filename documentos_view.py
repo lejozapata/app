@@ -219,6 +219,10 @@ def build_documentos_view(page: ft.Page) -> ft.Control:
     # -----------------------------
     btn_send_consent = ft.OutlinedButton("Enviar por correo", icon=ft.Icons.EMAIL, disabled=True)
     hint_consent = ft.Text("", size=11, color=ft.Colors.GREY_700)
+    chk_firma_consent = ft.Checkbox(
+        label="Firma consentimiento",
+        value=False,   # 👈 desmarcado por defecto
+    )
 
     # -----------------------------
     # Botones e hints (Certificado)
@@ -339,7 +343,7 @@ def build_documentos_view(page: ft.Page) -> ft.Control:
         if not pac:
             return snack("Selecciona un paciente primero.")
         try:
-            generar_pdf_consentimiento(pac["documento"], abrir=True, force=True)
+            generar_pdf_consentimiento(pac["documento"], abrir=True, force=True, incluir_firma_profesional=bool(chk_firma_consent.value))
             snack("✅ Consentimiento generado.")
             refresh_state_consentimiento()
         except Exception as ex:
@@ -542,6 +546,7 @@ def build_documentos_view(page: ft.Page) -> ft.Control:
                     wrap=True,
                 ),
                 hint_consent,
+                chk_firma_consent,
                 msg_consent,
             ],
             spacing=0,
