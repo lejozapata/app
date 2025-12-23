@@ -672,6 +672,7 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
                             "medico", dict(ant)
                         ),
                     ),
+                    
                     ft.TextButton(
                         "Eliminar",
                         on_click=lambda e, ant_id=a["id"]: confirmar_eliminar_antecedente(
@@ -917,14 +918,16 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
 
             acciones = ft.Row(
                 [
-                    ft.TextButton(
-                        "Editar",
+                    ft.IconButton(
+                        icon=ft.Icons.EDIT,
+                        tooltip="Editar paciente",
                         on_click=lambda ev, doc=p["documento"]: intentar_cargar_paciente(
                             doc
-                        ),
+                        ),  
                     ),
-                    ft.TextButton(
-                        "Eliminar",
+                    ft.IconButton(
+                        icon=ft.Icons.DELETE,
+                        tooltip="Eliminar",
                         on_click=lambda ev, doc=p["documento"]: confirmar_eliminar_paciente(
                             doc
                         ),
@@ -1368,6 +1371,7 @@ def build_pacientes_view(page: ft.Page) -> ft.Control:
     boton_guardar = ft.ElevatedButton(
         text="Guardar paciente",
         on_click=guardar_paciente_handler,
+        icon=ft.Icons.SAVE,
     )
 
     boton_limpiar = ft.TextButton(

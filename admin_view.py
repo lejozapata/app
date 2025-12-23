@@ -1,8 +1,18 @@
 import re
+import os
 import flet as ft
 import asyncio
+import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, available_timezones
+from .backup_utils import (
+    list_backups,
+    restore_database_from_backup, 
+    purge_backups,
+    backup_database,
+    read_last_backup_meta,
+    
+)  
 
 from .db import (
     obtener_configuracion_profesional,
@@ -944,12 +954,478 @@ def build_admin_view(page: ft.Page) -> ft.Control:
     )
 
     refrescar_servicios()
+    
+    
+    # =====================================================================
+    #                         SECCIÓN BACKUPS
+    # =====================================================================
+    
+    #Backup en cierre
+    def _on_window_event(e: ft.WindowEvent):
+        if e.data == "close":
+            try:
+                bdir = (txt_backup_dir.value or "").strip()
+                if bdir:
+                    backup_database(bdir, zip_backup=True, method="native_on_close")
+                    _auto_purge_if_needed()
+            except:
+                pass
+            page.window_destroy()
+
+    page.on_window_event = _on_window_event
+    
+    # ---- Persistencia UI backups (client_storage) ----
+    K_BACKUP_DIR = "backup.dir"
+    K_BACKUP_NATIVE = "backup.native.enabled"
+    K_BACKUP_INTERVAL = "backup.native.interval"
+    K_BACKUP_KEEP_LAST = "backup.keep_last"
+    
+    backup_status_native = ft.Container(
+        padding=ft.padding.symmetric(10, 6),
+        border_radius=20,
+        bgcolor=ft.Colors.GREY_200,
+        content=ft.Text("Estado Backup: Inactivo", weight=ft.FontWeight.W_600),
+    )
+
+    txt_backup_dir = ft.TextField(
+        label="Carpeta destino de backup",
+        value="",
+        read_only=True,
+        width=600,   # ✅ ancho fijo, evita que Row/wrap haga cosas raras
+        suffix_icon=ft.IconButton(
+            icon=ft.Icons.CLOSE,
+            tooltip="Limpiar ruta",
+            on_click=lambda e: _clear_backup_dir(),
+        ),
+    )
+    
+    dd_restore = ft.Dropdown(label="Restaurar desde backup", width=520)
+    btn_refresh_backups = ft.OutlinedButton("Recargar lista", icon=ft.Icons.REFRESH)
+
+    btn_restore = ft.ElevatedButton("Restaurar backup", icon=ft.Icons.RESTORE)
+    txt_restore_status = ft.Text("", size=12)
+
+    dd_keep_last = ft.Dropdown(
+        label="Depuración: conservar últimas",
+        value="10",
+        options=[
+            ft.dropdown.Option("5", "5 backups"),
+            ft.dropdown.Option("10", "10 backups"),
+            ft.dropdown.Option("20", "20 backups"),
+            ft.dropdown.Option("50", "50 backups"),
+        ],
+        width=250,
+    )
+    dd_keep_last.on_change = lambda e: page.client_storage.set(
+        K_BACKUP_KEEP_LAST, str(dd_keep_last.value or "10")
+    )
+    
+    saved_keep = page.client_storage.get(K_BACKUP_KEEP_LAST)
+    if saved_keep:
+        dd_keep_last.value = str(saved_keep)
+    
+    btn_purge = ft.OutlinedButton("Depurar ahora", icon=ft.Icons.DELETE_SWEEP)
+    txt_purge_status = ft.Text("", size=12)
+    
+    #Funciones backup native
+    
+    def _clear_backup_dir():
+        txt_backup_dir.value = ""
+        page.client_storage.remove(K_BACKUP_DIR)
+
+        # limpiar UI dependiente
+        dd_restore.options = []
+        dd_restore.value = None
+        txt_restore_status.value = ""
+        txt_purge_status.value = ""
+        lbl_last_backup.value = "Último backup: —"
+
+        page.update()
+    
+    def _refresh_last_backup_label():
+        bdir = (txt_backup_dir.value or "").strip()
+        if not bdir or not os.path.isdir(bdir):
+            lbl_last_backup.value = "Último backup: —"
+            return
+
+        meta = read_last_backup_meta(bdir)
+        if not meta:
+            lbl_last_backup.value = "Último backup: —"
+            return
+
+        lbl_last_backup.value = f"Último backup: {meta.get('created_at','—')}  ({meta.get('filename','')})"
+        
+    def _auto_purge_if_needed():
+        bdir = (txt_backup_dir.value or "").strip()
+        if not bdir:
+            return
+
+        keep_last = int(
+            page.client_storage.get(K_BACKUP_KEEP_LAST) or dd_keep_last.value or "10"
+        )
+
+        purge_backups(
+            backup_dir=bdir,
+            keep_last=keep_last,
+            include_pre_restore=False,  # 👈 clave
+        )
+    
+    #Funciones restore - depure
+
+    def _friendly_backup_label(filename: str) -> str:
+        # soporta: backup_YYYYMMDD_HHMMSS.zip o db_YYYY-MM-DD_HH-MM-SS.zip (ajusta si tu formato difiere)
+        m = re.search(r"(\d{8})[_-](\d{6})", filename)
+        if m:
+            ymd, hms = m.group(1), m.group(2)
+            dt = datetime.strptime(ymd + hms, "%Y%m%d%H%M%S")
+            return dt.strftime("Backup %Y-%m-%d %H:%M:%S")
+        return filename
+    
+    def _load_backup_dropdown():
+        dd_restore.options = []
+        bdir = (txt_backup_dir.value or "").strip()
+        items = list_backups(bdir)
+        for it in items[:200]:
+            fname = os.path.basename(it["path"])
+            label = _friendly_backup_label(fname)
+            dd_restore.options.append(ft.dropdown.Option(it["path"], label))
+            
+        dd_restore.value = dd_restore.options[0].key if dd_restore.options else None
+        dd_restore.update()
+
+    def _on_refresh_backups(_):
+        _load_backup_dropdown()
+        txt_restore_status.value = f"Backups encontrados: {len(dd_restore.options)}"
+        txt_restore_status.color = ft.Colors.GREY_700
+        txt_restore_status.update()
+        
+
+    btn_refresh_backups.on_click = _on_refresh_backups
+
+
+    def _on_restore_backup(_):
+        bdir = (txt_backup_dir.value or "").strip()
+        if not bdir:
+            txt_restore_status.value = "❌ Selecciona carpeta destino de backups."
+            txt_restore_status.color = ft.Colors.RED_700
+            txt_restore_status.update()
+            return
+
+        backup_path = dd_restore.value
+        if not backup_path:
+            txt_restore_status.value = "❌ No hay backup seleccionado."
+            txt_restore_status.color = ft.Colors.RED_700
+            txt_restore_status.update()
+            return
+
+        try:
+            pre_path, restored_from = restore_database_from_backup(
+                backup_path=backup_path,
+                backup_dir=bdir,
+                make_prebackup=True,
+                prebackup_zip=True,
+            )
+            txt_restore_status.value = (
+                f"✅ Restaurado desde: {os.path.basename(restored_from)}. "
+                f"Respaldo previo: {os.path.basename(pre_path) if pre_path else 'N/A'}"
+            )
+            txt_restore_status.color = ft.Colors.GREEN_700
+            txt_restore_status.update()
+
+            # refrescar lista por si se creó pre_restore
+            _load_backup_dropdown()
+
+            # Sugerencia UX: avisar reinicio (solo texto)
+            page.snack_bar = ft.SnackBar(content=ft.Text("Recomendación: reinicia la app para garantizar consistencia."))
+            page.snack_bar.open = True
+            page.update()
+
+        except Exception as ex:
+            txt_restore_status.value = f"❌ Error restaurando: {ex}"
+            txt_restore_status.color = ft.Colors.RED_700
+            txt_restore_status.update()
+            
+        #Purge silencioso
+        keep_last = int(dd_keep_last.value or "10")
+        purge_backups(bdir, keep_last=keep_last, include_pre_restore=True)  
+
+    btn_restore.on_click = _on_restore_backup
+
+
+    def _on_purge(_):
+        bdir = (txt_backup_dir.value or "").strip()
+        if not bdir:
+            txt_purge_status.value = "❌ Selecciona carpeta de backups."
+            txt_purge_status.color = ft.Colors.RED_700
+            txt_purge_status.update()
+            return
+
+        keep_last = int(dd_keep_last.value or "10")
+        deleted = purge_backups(bdir, keep_last=keep_last, include_pre_restore=True)
+
+        txt_purge_status.value = f"✅ Depuración lista. Eliminados: {len(deleted)}"
+        txt_purge_status.color = ft.Colors.GREEN_700
+        txt_purge_status.update()
+
+        _load_backup_dropdown()
+
+    btn_purge.on_click = _on_purge
+
+    switch_backup_native = ft.Switch(label="Activar Backup", value=False)
+    dd_backup_native_interval = ft.Dropdown(
+        label="Frecuencia",
+        value="360",
+        options=[
+            ft.dropdown.Option("60", "Cada 1 hora"),
+            ft.dropdown.Option("180", "Cada 3 horas"),
+            ft.dropdown.Option("360", "Cada 6 horas"),
+            ft.dropdown.Option("720", "Cada 12 horas"),
+            ft.dropdown.Option("1440", "Diario"),
+        ],
+    )
+    
+    dd_backup_native_interval.on_change = lambda e: page.client_storage.set(
+    K_BACKUP_INTERVAL, str(dd_backup_native_interval.value or "360")
+    )
+
+    
+    # Cargar estado guardado (si existe)
+    saved_dir = page.client_storage.get(K_BACKUP_DIR)
+    if saved_dir:
+        txt_backup_dir.value = saved_dir
+
+    saved_native = page.client_storage.get(K_BACKUP_NATIVE)
+    if saved_native is not None:
+        switch_backup_native.value = bool(saved_native)
+
+    saved_interval = page.client_storage.get(K_BACKUP_INTERVAL)
+    if saved_interval:
+        dd_backup_native_interval.value = str(saved_interval)
+
+    pick_backup_dir = ft.FilePicker()
+    page.overlay.append(pick_backup_dir)
+
+    # ✅ evitar overlays duplicados
+    pick_backup_dir = None
+    for c in page.overlay:
+        if isinstance(c, ft.FilePicker):
+            pick_backup_dir = c
+            break
+
+    if pick_backup_dir is None:
+        pick_backup_dir = ft.FilePicker()
+        page.overlay.append(pick_backup_dir)
+            
+            
+    #CONTROLADORES Nativos
+    lbl_last_backup = ft.Text("Último backup: —", size=12, color=ft.Colors.GREY_700)
+    btn_backup_now = ft.ElevatedButton(
+        "Hacer backup ahora",
+        icon=ft.Icons.SAVE,
+    )
+    
+    native_block = ft.Column(
+        [
+            ft.Text("Guardar Backup", weight="bold"),
+            ft.Container(
+                padding=12,
+                border=ft.border.all(1, ft.Colors.GREY_300),
+                border_radius=10,
+                content=ft.Column(
+                    [
+                        dd_backup_native_interval,
+                        ft.Row([btn_backup_now], spacing=10),
+                        lbl_last_backup,
+                    ],
+                    spacing=10,
+                ),
+            ),
+        ],
+        spacing=10,
+        visible=False,   # 👈 clave
+    )
+
+    def _on_pick_backup_dir(e: ft.FilePickerResultEvent):
+        if e.path:
+            txt_backup_dir.value = e.path
+            page.client_storage.set(K_BACKUP_DIR, e.path)
+            txt_backup_dir.update()
+
+            # opcional: recargar lista de restore al cambiar carpeta
+            _load_backup_dropdown()
+            _refresh_last_backup_label()
+            page.update()
+
+    pick_backup_dir.on_result = _on_pick_backup_dir
+
+    btn_pick_backup_dir = ft.OutlinedButton(
+        "Elegir carpeta",
+        icon=ft.Icons.FOLDER_OPEN,
+        on_click=lambda _: pick_backup_dir.get_directory_path(
+            dialog_title="Selecciona carpeta destino de backups"
+        ),
+    )
+    
+    def _on_backup_now(e):
+        bdir = (txt_backup_dir.value or "").strip()
+        if not bdir:
+            txt_restore_status.value = "⚠️ Primero elige una carpeta destino de backup."
+            page.update()
+            return
+
+        try:
+            created = backup_database(bdir, zip_backup=True, method="native_manual")
+            txt_restore_status.value = f"✅ Backup creado: {os.path.basename(created)}"
+            _auto_purge_if_needed()
+            _refresh_last_backup_label()
+        except Exception as ex:
+            txt_restore_status.value = f"❌ Error creando backup: {ex}"
+        page.update()
+        
+    btn_backup_now.on_click = _on_backup_now
+    
+    _backup_task_running = {"running": False}
+    _last_run_ts = {"ts": 0.0}  # en RAM; luego lo haremos persistente si quieres
+
+
+    def _interval_seconds():
+        v = dd_backup_native_interval.value or "Cada 6 horas"
+        if "1" in v:
+            return 1 * 3600
+        if "6" in v:
+            return 6 * 3600
+        if "12" in v:
+            return 12 * 3600
+        if "24" in v or "día" in v.lower():
+            return 24 * 3600
+        return 6 * 3600
+    
+    async def _native_backup_loop():
+        if _backup_task_running["running"]:
+            return
+
+        _backup_task_running["running"] = True
+        try:
+            while True:
+                await asyncio.sleep(2)
+
+                if not switch_backup_native.value:
+                    _backup_task_running["running"] = False
+                    return
+
+                bdir = (txt_backup_dir.value or "").strip()
+                if not bdir:
+                    continue
+
+                interval = _interval_seconds()
+                now = time.time()
+
+                # Si nunca ha corrido, forzamos "backup atrasado" al activar
+                if _last_run_ts["ts"] == 0.0:
+                    # Si hay un backup existente en la carpeta, úsalo como referencia para no disparar de inmediato
+                    meta = read_last_backup_meta(bdir)
+                    if meta and meta.get("epoch"):
+                        _last_run_ts["ts"] = float(meta["epoch"])
+                    else:
+                        _last_run_ts["ts"] = now
+
+                if (now - _last_run_ts["ts"]) >= interval:
+                    try:
+                        created = backup_database(bdir, zip_backup=True, method="native_auto")
+                        _last_run_ts["ts"] = now
+                        _auto_purge_if_needed()
+                        _refresh_last_backup_label()
+                        txt_restore_status.value = f"✅ Backup automático: {os.path.basename(created)}"
+                        page.update()
+                    except Exception as ex:
+                        txt_restore_status.value = f"❌ Error backup automático: {ex}"
+                        page.update()
+
+        finally:
+            _backup_task_running["running"] = False
+    
+    
+    def _refresh_backup_visibility():
+        page.client_storage.set(K_BACKUP_NATIVE, bool(switch_backup_native.value))
+        page.client_storage.set(K_BACKUP_INTERVAL, str(dd_backup_native_interval.value or "360"))
+        
+        native_on = bool(switch_backup_native.value)
+
+
+        native_block.visible = native_on
+
+        # badges de estado
+        backup_status_native.content.value = f"Estado Backup: {'Activo' if native_on else 'Inactivo'}"
+        backup_status_native.bgcolor = ft.Colors.GREEN_100 if native_on else ft.Colors.GREY_200
+
+
+
+        for c in (native_block, backup_status_native):
+            if c.page is not None:
+                c.update()
+                
+        if switch_backup_native.value:
+            page.run_task(_native_backup_loop)
+        page.update()
+                
+    switch_backup_native.on_change = lambda e: _refresh_backup_visibility()
+    
+    _refresh_backup_visibility()
+
+    # Sección (contenedor)
+    seccion_backups = ft.Column(
+        [
+            ft.Text("Backups", size=18, weight="bold"),
+            ft.Text("Configura backups automáticos de la base de datos.", size=12, color=ft.Colors.GREY_700),
+            ft.Divider(),
+
+            # Estado
+            ft.Row([backup_status_native], spacing=10, wrap=True),
+
+            # Carpeta
+            ft.Row([txt_backup_dir, btn_pick_backup_dir], spacing=10, wrap=True),
+
+            # Switches GLOBALES (arriba, limpios)
+            ft.Row(
+                [
+                    switch_backup_native,
+                ],
+                spacing=30,
+                wrap=True,
+            ),
+            
+            ft.Divider(),
+
+            # BLOQUES CON VISIBILIDAD
+            native_block,
+
+            ft.Divider(),
+
+            # Restore
+            ft.Text("Restaurar", weight="bold"),
+            ft.Row([dd_restore, btn_refresh_backups], wrap=True, spacing=10),
+            ft.Row([btn_restore], spacing=10),
+            txt_restore_status,
+
+            ft.Divider(),
+
+            # Depuración
+            ft.Text("Depuración", weight="bold"),
+            ft.Row([dd_keep_last, btn_purge], wrap=True, spacing=10),
+            txt_purge_status,
+
+        ],
+        spacing=12,
+        scroll=ft.ScrollMode.AUTO,
+    )
+
+    
 
     # =====================================================================
     #                 CONTENEDOR DE SECCIONES + MENÚ IZQ
     # =====================================================================
 
-    contenido_derecha = ft.Container(expand=True)
+    contenido_derecha = ft.Container(expand=True, padding=20)
 
     tile_profesional = ft.ListTile(
         leading=ft.Icon(ft.Icons.PERSON),
@@ -964,6 +1440,13 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         selected=False,
         on_click=lambda e: cambiar_seccion("servicios"),
     )
+    
+    tile_backups = ft.ListTile(
+        leading=ft.Icon(ft.Icons.BACKUP),
+        title=ft.Text("Backups"),
+        selected=False,
+        on_click=lambda e: cambiar_seccion("backups"),
+    )
 
     def cambiar_seccion(nueva: str):
         seccion_activa["value"] = nueva
@@ -971,18 +1454,29 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             contenido_derecha.content = seccion_profesional
         elif nueva == "servicios":
             contenido_derecha.content = seccion_servicios
+        elif nueva == "backups":
+            contenido_derecha.content = ft.Container(expand=True, content=seccion_backups)
+            _refresh_last_backup_label()
+            _refresh_backup_visibility()
+            if (txt_backup_dir.value or "").strip():
+                _load_backup_dropdown()
+        
 
         if nueva != "profesional":
             mensaje_profesional.value = ""
 
         tile_profesional.selected = nueva == "profesional"
         tile_servicios.selected = nueva == "servicios"
+        tile_backups.selected = nueva == "backups"
 
         if contenido_derecha.page is not None:
             contenido_derecha.update()
         if tile_profesional.page is not None:
             tile_profesional.update()
             tile_servicios.update()
+            tile_backups.update()
+            
+        page.update()
 
     cambiar_seccion("profesional")
 
@@ -1003,6 +1497,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
                 ft.Divider(),
                 tile_profesional,
                 tile_servicios,
+                tile_backups,
             ],
             spacing=5,
         ),
