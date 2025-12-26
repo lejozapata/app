@@ -5,14 +5,14 @@ import asyncio
 import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, available_timezones
+from . import __version__
 from .backup_utils import (
     list_backups,
-    restore_database_from_backup, 
+    restore_database_from_backup,
     purge_backups,
     backup_database,
     read_last_backup_meta,
-    
-)  
+)
 
 from .db import (
     obtener_configuracion_profesional,
@@ -101,7 +101,10 @@ def build_timezone_options() -> list[ft.dropdown.Option]:
             total_minutes = abs(total_minutes)
             hours, minutes = divmod(total_minutes, 60)
 
-            label = f"(GMT{sign}{hours:02d}:{minutes:02d}) {tz_name.split('/')[-1].replace('_', ' ')}"
+            label = (
+                f"(GMT{sign}{hours:02d}:{minutes:02d}) "
+                f"{tz_name.split('/')[-1].replace('_', ' ')}"
+            )
             opciones.append(ft.dropdown.Option(tz_name, label))
     except Exception:
         # Fallback sencillo si hay algún problema con zoneinfo
@@ -125,7 +128,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
     cfg_gmail = obtener_configuracion_gmail()
     cfg_cie11 = obtener_configuracion_cie11()
 
-    seccion_activa = {"value": "profesional"}  # "profesional" | "servicios"
+    seccion_activa = {"value": "profesional"}  # "profesional" | "servicios" | "configuracion" | "backups"
 
     # -------- Formateo de teléfono mientras se escribe --------
 
@@ -184,6 +187,37 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         width=300,
     )
 
+    # =====================================================================
+    #                  CONTROLES (MOVIDOS) - CONFIGURACIÓN
+    # =====================================================================
+    
+    ##### Helpers para Abrir URLs de ayuda #####
+    
+    def abrir_API_CIE11(e):
+        #Abre donde se define el ClientId y ClientSecret
+        url = "https://icd.who.int/icdapi"
+        page.launch_url(url)
+        
+    btn_API_CIE11 = ft.IconButton(
+        icon=ft.Icons.INFO_OUTLINE,
+        icon_color=ft.Colors.BLUE_600,
+        icon_size=18,
+        tooltip="Credenciales API CIE11",
+        on_click=abrir_API_CIE11,
+    )
+    
+    def abrir_sitio_gmail(e):
+        #Abre donde se solicita la clave de aplicación
+        url = "https://myaccount.google.com/apppasswords"
+        page.launch_url(url)
+        
+    btn_abrir_sitio_gmail = ft.IconButton(
+        icon=ft.Icons.INFO_OUTLINE,
+        icon_color=ft.Colors.BLUE_600,
+        icon_size=18,
+        tooltip="Credenciales API CIE11",
+        on_click=abrir_sitio_gmail
+    )
 
     # -------- Envío de correos (Gmail) --------
 
@@ -191,7 +225,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         label="Correo Gmail para enviar notificaciones",
         value=(cfg_gmail.get("gmail_user") or ""),
         width=350,
-        helper_text="Debe ser una cuenta Gmail con clave de aplicación (App Password).",
+        helper_text="Debe ser una cuenta Gmail válida.",
     )
 
     txt_gmail_app_password = ft.TextField(
@@ -202,8 +236,8 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         can_reveal_password=False,
         helper_text=(
             "Ya hay una clave guardada. Deja este campo en blanco para conservarla."
-            if cfg_gmail.get("tiene_password") else
-            "En Gmail: Seguridad -> Contraseñas de aplicaciones."
+            if cfg_gmail.get("tiene_password")
+            else "En Gmail: Seguridad -> Contraseñas de aplicaciones."
         ),
     )
 
@@ -211,17 +245,16 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         label="Habilitar envío de correos (Gmail)",
         value=bool(cfg_gmail.get("habilitado")),
     )
-    
-    
+
     # -------- CIE-11 (ICD-11) --------
 
-    # Releases sugeridos (puedes ampliar cuando quieras)
     RELEASES_CIE11 = [
         "2025-01",
         "2024-01",
         "2023-05",
         "2022-02",
     ]
+    
 
     dd_cie11_release = ft.Dropdown(
         label="Release CIE-11",
@@ -234,6 +267,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         label="CIE-11 Client ID",
         value=(cfg_cie11.get("client_id") or ""),
         width=350,
+        helper_text=" ",
     )
 
     txt_cie11_client_secret = ft.TextField(
@@ -244,8 +278,8 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         can_reveal_password=False,
         helper_text=(
             "Ya hay un secret guardado. Deja este campo en blanco para conservarlo."
-            if cfg_cie11.get("tiene_secret") else
-            "Se obtiene en el portal de la OMS (ICD API)."
+            if cfg_cie11.get("tiene_secret")
+            else "Se obtiene en el portal de la OMS (ICD API)."
         ),
     )
 
@@ -254,8 +288,9 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         value=bool(cfg_cie11.get("habilitado")),
     )
 
-
-    # -------- Información complementaria para facturación --------
+    # =====================================================================
+    #                INFORMACIÓN COMPLEMENTARIA PARA FACTURACIÓN
+    # =====================================================================
 
     dd_banco = ft.Dropdown(
         label="Banco",
@@ -328,15 +363,15 @@ def build_admin_view(page: ft.Page) -> ft.Control:
 
         # Número de cuenta
         txt_numero_cuenta.disabled = not es_transferencia
-        txt_numero_cuenta.visible  = es_transferencia
+        txt_numero_cuenta.visible = es_transferencia
         if not es_transferencia:
-            txt_numero_cuenta.value = ""  # opcional, para evitar guardar basura
+            txt_numero_cuenta.value = ""
 
         # Banco
         dd_banco.disabled = not es_transferencia
-        dd_banco.visible  = es_transferencia
+        dd_banco.visible = es_transferencia
         if not es_transferencia:
-            dd_banco.value = None  # opcional
+            dd_banco.value = None
 
         if txt_numero_cuenta.page is not None:
             txt_numero_cuenta.update()
@@ -352,7 +387,9 @@ def build_admin_view(page: ft.Page) -> ft.Control:
     actualizar_beneficiario_desde_profesional()
     actualizar_estado_numero_cuenta()
 
-    # -------- Horario por día --------
+    # =====================================================================
+    #                         HORARIO POR DÍA
+    # =====================================================================
 
     nombres_dias = [
         "Lunes",
@@ -446,9 +483,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             if page is not None and page.controls:
                 page.update()
 
-        sw_activo.on_change = lambda e, fila_ref=fila: actualizar_visibilidad(
-            e, fila_ref=fila_ref
-        )
+        sw_activo.on_change = lambda e, fila_ref=fila: actualizar_visibilidad(e, fila_ref=fila_ref)
         actualizar_visibilidad(fila_ref=fila)
 
         filas_horario.append(fila)
@@ -486,11 +521,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         except Exception:
             return 0
 
-    mensaje_profesional = ft.Text(
-        "",
-        color=ft.Colors.GREEN_700,
-        size=12,
-    )
+    mensaje_profesional = ft.Text("", color=ft.Colors.GREEN_700, size=12)
 
     async def limpiar_mensaje_profesional():
         await asyncio.sleep(3)
@@ -567,26 +598,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
 
         guardar_configuracion_facturacion(cfg_fact_guardar)
 
-        # ---- Configuración Gmail (notificaciones) ----
-        cfg_gmail_guardar = {
-            "gmail_user": (txt_gmail_user.value or "").strip() or None,
-            "gmail_app_password": (txt_gmail_app_password.value or "").strip() or None,
-            "habilitado": bool(sw_habilitar_email.value),
-        }
-        guardar_configuracion_gmail(cfg_gmail_guardar)
-        
-        # ---- Configuración CIE-11 ----
-        cfg_cie11_save = {
-            "release": dd_cie11_release.value,
-            "client_id": txt_cie11_client_id.value,
-            "client_secret": txt_cie11_client_secret.value,  # si viene vacío, se conserva
-            "habilitado": sw_habilitar_cie11.value,
-        }
-        guardar_configuracion_cie11(cfg_cie11_save)
-
-        page.snack_bar = ft.SnackBar(
-            content=ft.Text("Configuración de horario y facturación guardada.")
-        )
+        page.snack_bar = ft.SnackBar(content=ft.Text("Información del profesional guardada."))
         page.snack_bar.open = True
 
         mensaje_profesional.value = "Información del profesional guardada correctamente."
@@ -598,9 +610,9 @@ def build_admin_view(page: ft.Page) -> ft.Control:
 
     seccion_profesional = ft.Column(
         [
-            ft.Text("Configuración del profesional", size=18, weight="bold"),
+            ft.Text("Información del profesional", size=18, weight="bold"),
             ft.Text(
-                "Define tu información de contacto y el horario de atención por día.",
+                "Define tu información de contacto, datos para facturación y el horario de atención por día.",
                 size=12,
                 color=ft.Colors.GREY_700,
             ),
@@ -609,25 +621,6 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             ft.Row([txt_direccion], spacing=10),
             ft.Row([dd_zona_horaria, txt_telefono, txt_email], spacing=10),
 
-            ft.Divider(),
-            ft.Text("Notificaciones por correo (Gmail)", weight="bold"),
-            ft.Text(
-                "Configura el correo Gmail y su clave de aplicación para enviar confirmaciones y cancelaciones.",
-                size=12,
-                color=ft.Colors.GREY_700,
-            ),
-            ft.Row([txt_gmail_user, txt_gmail_app_password], spacing=10),
-            ft.Row([sw_habilitar_email], spacing=10),
-            ft.Divider(),
-            ft.Text("CIE-11 (ICD-11)", weight="bold"),
-            ft.Text(
-                "Configura el release y credenciales para consultar diagnósticos desde la API oficial.",
-                size=12,
-                color=ft.Colors.GREY_700,
-            ),
-            ft.Row([dd_cie11_release], spacing=10),
-            ft.Row([txt_cie11_client_id, txt_cie11_client_secret], spacing=10, wrap=True),
-            ft.Row([sw_habilitar_cie11], spacing=10),
             ft.Divider(),
             ft.Text("Información complementaria para facturación", weight="bold"),
             ft.Text(
@@ -639,6 +632,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             ft.Row([chk_benef_mismo], spacing=10),
             ft.Row([txt_beneficiario, txt_nit_cc], spacing=10),
             ft.Row([txt_numero_cuenta], spacing=10),
+
             ft.Divider(),
             ft.Text("Horario de inicio y fin de la jornada", weight="bold"),
             ft.Text(
@@ -647,22 +641,128 @@ def build_admin_view(page: ft.Page) -> ft.Control:
                 color=ft.Colors.GREY_700,
             ),
             ft.Container(
-            content=ft.Column(filas_visual_horario, spacing=8),
-            padding=10,
-            border=ft.border.all(1, ft.Colors.GREY_300),
-            border_radius=8,
-        ),
-        mensaje_profesional,
-        ft.Container(
-            content=ft.Row(
-                [ft.ElevatedButton("Guardar cambios", on_click=guardar_profesional)],
-                #alignment=ft.MainAxisAlignment.END,
+                content=ft.Column(filas_visual_horario, spacing=8),
+                padding=10,
+                border=ft.border.all(1, ft.Colors.GREY_300),
+                border_radius=8,
             ),
-            padding=ft.padding.only(bottom=32, top=4),
-        ),
-    ],
-    spacing=15,
-    scroll=ft.ScrollMode.AUTO,
+            mensaje_profesional,
+            ft.Container(
+                content=ft.Row([ft.ElevatedButton("Guardar cambios", on_click=guardar_profesional)]),
+                padding=ft.padding.only(bottom=32, top=4),
+            ),
+        ],
+        spacing=15,
+        scroll=ft.ScrollMode.AUTO,
+    )
+
+    # =====================================================================
+    #                         SECCIÓN CONFIGURACIÓN
+    # =====================================================================
+
+    mensaje_configuracion = ft.Text("", color=ft.Colors.GREEN_700, size=12)
+
+    async def limpiar_mensaje_configuracion():
+        await asyncio.sleep(3)
+        mensaje_configuracion.value = ""
+        if mensaje_configuracion.page is not None:
+            mensaje_configuracion.update()
+
+    def guardar_integraciones():
+        # ---- Configuración Gmail (notificaciones) ----
+        cfg_gmail_guardar = {
+            "gmail_user": (txt_gmail_user.value or "").strip() or None,
+            "gmail_app_password": (txt_gmail_app_password.value or "").strip() or None,
+            "habilitado": bool(sw_habilitar_email.value),
+        }
+        guardar_configuracion_gmail(cfg_gmail_guardar)
+
+        # ---- Configuración CIE-11 ----
+        cfg_cie11_save = {
+            "release": dd_cie11_release.value,
+            "client_id": txt_cie11_client_id.value,
+            "client_secret": txt_cie11_client_secret.value,  # si viene vacío, se conserva
+            "habilitado": sw_habilitar_cie11.value,
+        }
+        guardar_configuracion_cie11(cfg_cie11_save)
+
+    def on_guardar_configuracion(e):
+        guardar_integraciones()
+
+        page.snack_bar = ft.SnackBar(content=ft.Text("Configuración guardada."))
+        page.snack_bar.open = True
+
+        mensaje_configuracion.value = "Configuración guardada correctamente."
+        if mensaje_configuracion.page is not None:
+            mensaje_configuracion.update()
+
+        page.run_task(limpiar_mensaje_configuracion)
+        page.update()
+
+    seccion_configuracion = ft.Column(
+        [
+            ft.Text("Configuración", size=18, weight="bold"),
+            ft.Text(
+                "Ajustes de integraciones y notificaciones.",
+                size=12,
+                color=ft.Colors.GREY_700,
+            ),
+            ft.Divider(),
+            ############ EMAIL (GMAIL) #############
+
+            ft.Text("Notificaciones por correo (Gmail)", weight="bold"),
+            ft.Text(
+                "Configura el correo Gmail y su clave de aplicación para enviar confirmaciones y cancelaciones.",
+                size=12,
+                color=ft.Colors.GREY_700,
+            ),
+            ft.Row([txt_gmail_user, txt_gmail_app_password], spacing=10),
+            ft.Row([sw_habilitar_email, btn_abrir_sitio_gmail], spacing=10),
+
+            ft.Divider(),
+            
+            ############ CIE-11 #############
+
+            ft.Text("Clasificación internacional de enfermedades CIE-11 (ICD-11)", weight="bold"),
+            ft.Text(
+                "Configura el release y credenciales para consultar diagnósticos desde la API oficial.",
+                size=12,
+                color=ft.Colors.GREY_700,
+            ),
+            ft.Row([dd_cie11_release], spacing=10),
+            ft.Row(
+                [txt_cie11_client_id, txt_cie11_client_secret],
+                spacing=10,
+                wrap=True,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            ft.Row([sw_habilitar_cie11, btn_API_CIE11], spacing=10),
+            
+            ft.Divider(),
+
+            ft.Text("Información de la aplicación", weight="bold"),
+
+            ft.Row(
+                [
+                    ft.Icon(ft.Icons.INFO_OUTLINE, size=16, color=ft.Colors.GREY_600),
+                    ft.Text(
+                        f"Versión instalada: {__version__}",
+                        size=12,
+                        color=ft.Colors.GREY_700,
+                    ),
+                ],
+                spacing=6,
+            ),
+
+            ft.Divider(),
+            mensaje_configuracion,
+            ft.Container(
+                content=ft.Row([ft.ElevatedButton("Guardar cambios", on_click=on_guardar_configuracion)]),
+                padding=ft.padding.only(bottom=32, top=4),
+            ),
+        ],
+        spacing=15,
+        scroll=ft.ScrollMode.AUTO,
     )
 
     # =====================================================================
@@ -691,14 +791,16 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         else:
             dd_srv_empresa.disabled = True
             dd_srv_empresa.value = ""
-        # Solo actualizar si el control ya está montado en la página (diálogo abierto)
         if dd_srv_empresa.page is not None:
             dd_srv_empresa.update()
 
     dd_srv_tipo = ft.Dropdown(
         label="Tipo",
         width=200,
-        options=[ft.dropdown.Option('particular','Particular'), ft.dropdown.Option('convenio','Convenio')],
+        options=[
+            ft.dropdown.Option("particular", "Particular"),
+            ft.dropdown.Option("convenio", "Convenio"),
+        ],
         on_change=on_cambio_tipo,
     )
 
@@ -708,13 +810,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         hint_text="Ej: 120000",
     )
 
-    # Texto de error dentro del diálogo
-    srv_error_text = ft.Text(
-        "",
-        color=ft.Colors.RED_700,
-        size=12,
-        visible=False,
-    )
+    srv_error_text = ft.Text("", color=ft.Colors.RED_700, size=12, visible=False)
 
     def mostrar_error_servicio(msg: str):
         srv_error_text.value = msg
@@ -722,7 +818,6 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         if srv_error_text.page is not None:
             srv_error_text.update()
 
-    # Diálogo principal para crear / editar servicio
     dlg_nuevo_servicio = ft.AlertDialog(
         modal=True,
         content=ft.Column(
@@ -738,7 +833,6 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         ),
     )
 
-    # Diálogo de confirmación de eliminación
     dlg_confirmar_eliminar = ft.AlertDialog(modal=True)
 
     def cerrar_dialogo(e=None):
@@ -768,9 +862,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             ft.TextButton("Cancelar", on_click=cerrar_confirmar_eliminar),
             ft.ElevatedButton(
                 "Eliminar",
-                on_click=lambda e, sid=servicio["id"]: eliminar_servicio_confirmado(
-                    e, sid
-                ),
+                on_click=lambda e, sid=servicio["id"]: eliminar_servicio_confirmado(e, sid),
             ),
         ]
         page.dialog = dlg_confirmar_eliminar
@@ -809,7 +901,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
                 fila = ft.Row(
                     [
                         ft.Text(s["nombre"], width=220),
-                        ft.Text(s.get("modalidad") or s.get("tipo",""), width=140),
+                        ft.Text(s.get("modalidad") or s.get("tipo", ""), width=140),
                         ft.Text(precio_txt, width=100),
                         ft.Text(s["empresa"] or "", width=180),
                         ft.Row(
@@ -817,16 +909,12 @@ def build_admin_view(page: ft.Page) -> ft.Control:
                                 ft.IconButton(
                                     icon=ft.Icons.EDIT,
                                     tooltip="Editar servicio",
-                                    on_click=lambda e, servicio=s: editar_servicio_handler(
-                                        servicio
-                                    ),
+                                    on_click=lambda e, servicio=s: editar_servicio_handler(servicio),
                                 ),
                                 ft.IconButton(
                                     icon=ft.Icons.DELETE,
                                     tooltip="Eliminar",
-                                    on_click=lambda e, servicio=s: confirmar_eliminar_servicio(
-                                        servicio
-                                    ),
+                                    on_click=lambda e, servicio=s: confirmar_eliminar_servicio(servicio),
                                 ),
                             ],
                             spacing=5,
@@ -841,11 +929,9 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             servicios_table.update()
 
     def editar_servicio_handler(servicio):
-        # Limpiar errores previos
         srv_error_text.value = ""
         srv_error_text.visible = False
 
-        # Cargar datos en campos
         txt_srv_nombre.value = servicio["nombre"]
         dd_srv_tipo.value = servicio.get("modalidad") or servicio.get("tipo")
         txt_srv_precio.value = str(int(servicio["precio"]))
@@ -857,21 +943,15 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             dd_srv_empresa.disabled = True
             dd_srv_empresa.value = ""
 
-        # Cambiamos apariencia del diálogo
         dlg_nuevo_servicio.title = ft.Text("Editar servicio")
-
-        # Cambiamos acciones
         dlg_nuevo_servicio.actions = [
             ft.TextButton("Cancelar", on_click=cerrar_dialogo),
             ft.ElevatedButton(
                 "Actualizar",
-                on_click=lambda e, servicio=servicio: actualizar_servicio_handler(
-                    e, servicio
-                ),
+                on_click=lambda e, servicio=servicio: actualizar_servicio_handler(e, servicio),
             ),
         ]
 
-        # Abrir diálogo
         dlg_nuevo_servicio.open = True
         page.open(dlg_nuevo_servicio)
         page.update()
@@ -886,15 +966,11 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             return
 
         if modalidad == "convenio" and not empresa:
-            mostrar_error_servicio(
-                "Debes ingresar el nombre de la empresa del convenio."
-            )
+            mostrar_error_servicio("Debes ingresar el nombre de la empresa del convenio.")
             return
 
         try:
-            precio = float(
-                (txt_srv_precio.value or "").replace(".", "").replace(",", "").strip()
-            )
+            precio = float((txt_srv_precio.value or "").replace(".", "").replace(",", "").strip())
             if precio <= 0:
                 raise ValueError()
         except Exception:
@@ -926,32 +1002,23 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         modalidad = dd_srv_tipo.value or "particular"
         empresa = (dd_srv_empresa.value or "").strip()
 
-        # Limpiar error previo
         srv_error_text.value = ""
         srv_error_text.visible = False
 
-        # Validar nombre
         if not nombre:
             mostrar_error_servicio("El nombre del servicio es obligatorio.")
             return
 
-        # Validar tipo
         if modalidad not in ("particular", "convenio"):
             mostrar_error_servicio("Selecciona una modalidad de servicio válida.")
             return
 
-        # Validar empresa sólo si es convenio
         if modalidad == "convenio" and not empresa:
-            mostrar_error_servicio(
-                "Para convenios empresariales debes indicar la empresa."
-            )
+            mostrar_error_servicio("Para convenios empresariales debes indicar la empresa.")
             return
 
-        # Validar precio
         try:
-            precio = float(
-                (txt_srv_precio.value or "").replace(".", "").replace(",", "").strip()
-            )
+            precio = float((txt_srv_precio.value or "").replace(".", "").replace(",", "").strip())
         except Exception:
             mostrar_error_servicio("Precio inválido. Usa solo números.")
             return
@@ -974,7 +1041,6 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         page.update()
 
     def abrir_nuevo_servicio(e):
-        # Limpiar campos y errores
         txt_srv_nombre.value = ""
         dd_srv_tipo.value = "particular"
         txt_srv_precio.value = ""
@@ -984,7 +1050,6 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         srv_error_text.visible = False
 
         dlg_nuevo_servicio.title = ft.Text("Nuevo servicio")
-
         dlg_nuevo_servicio.actions = [
             ft.TextButton("Cancelar", on_click=cerrar_dialogo),
             ft.ElevatedButton("Guardar", on_click=guardar_nuevo_servicio),
@@ -1004,11 +1069,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             ),
             ft.Divider(),
             ft.Row(
-                [
-                    ft.ElevatedButton(
-                        "Nuevo servicio", icon=ft.Icons.ADD, on_click=abrir_nuevo_servicio
-                    ),
-                ],
+                [ft.ElevatedButton("Nuevo servicio", icon=ft.Icons.ADD, on_click=abrir_nuevo_servicio)],
                 alignment=ft.MainAxisAlignment.END,
             ),
             servicios_table,
@@ -1018,13 +1079,11 @@ def build_admin_view(page: ft.Page) -> ft.Control:
     )
 
     refrescar_servicios()
-    
-    
+
     # =====================================================================
     #                         SECCIÓN BACKUPS
     # =====================================================================
-    
-    #Backup en cierre
+
     def _on_window_event(e: ft.WindowEvent):
         if e.data == "close":
             try:
@@ -1037,13 +1096,12 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             page.window_destroy()
 
     page.on_window_event = _on_window_event
-    
-    # ---- Persistencia UI backups (client_storage) ----
+
     K_BACKUP_DIR = "backup.dir"
     K_BACKUP_NATIVE = "backup.native.enabled"
     K_BACKUP_INTERVAL = "backup.native.interval"
     K_BACKUP_KEEP_LAST = "backup.keep_last"
-    
+
     backup_status_native = ft.Container(
         padding=ft.padding.symmetric(10, 6),
         border_radius=20,
@@ -1055,14 +1113,14 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         label="Carpeta destino de backup",
         value="",
         read_only=True,
-        width=600,   # ✅ ancho fijo, evita que Row/wrap haga cosas raras
+        width=600,
         suffix_icon=ft.IconButton(
             icon=ft.Icons.CLOSE,
             tooltip="Limpiar ruta",
             on_click=lambda e: _clear_backup_dir(),
         ),
     )
-    
+
     dd_restore = ft.Dropdown(label="Restaurar desde backup", width=520)
     btn_refresh_backups = ft.OutlinedButton("Recargar lista", icon=ft.Icons.REFRESH)
 
@@ -1080,24 +1138,19 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         ],
         width=250,
     )
-    dd_keep_last.on_change = lambda e: page.client_storage.set(
-        K_BACKUP_KEEP_LAST, str(dd_keep_last.value or "10")
-    )
-    
+    dd_keep_last.on_change = lambda e: page.client_storage.set(K_BACKUP_KEEP_LAST, str(dd_keep_last.value or "10"))
+
     saved_keep = page.client_storage.get(K_BACKUP_KEEP_LAST)
     if saved_keep:
         dd_keep_last.value = str(saved_keep)
-    
+
     btn_purge = ft.OutlinedButton("Depurar ahora", icon=ft.Icons.DELETE_SWEEP)
     txt_purge_status = ft.Text("", size=12)
-    
-    #Funciones backup native
-    
+
     def _clear_backup_dir():
         txt_backup_dir.value = ""
         page.client_storage.remove(K_BACKUP_DIR)
 
-        # limpiar UI dependiente
         dd_restore.options = []
         dd_restore.value = None
         txt_restore_status.value = ""
@@ -1105,7 +1158,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         lbl_last_backup.value = "Último backup: —"
 
         page.update()
-    
+
     def _refresh_last_backup_label():
         bdir = (txt_backup_dir.value or "").strip()
         if not bdir or not os.path.isdir(bdir):
@@ -1118,33 +1171,28 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             return
 
         lbl_last_backup.value = f"Último backup: {meta.get('created_at','—')}  ({meta.get('filename','')})"
-        
+
     def _auto_purge_if_needed():
         bdir = (txt_backup_dir.value or "").strip()
         if not bdir:
             return
 
-        keep_last = int(
-            page.client_storage.get(K_BACKUP_KEEP_LAST) or dd_keep_last.value or "10"
-        )
+        keep_last = int(page.client_storage.get(K_BACKUP_KEEP_LAST) or dd_keep_last.value or "10")
 
         purge_backups(
             backup_dir=bdir,
             keep_last=keep_last,
-            include_pre_restore=False,  # 👈 clave
+            include_pre_restore=False,
         )
-    
-    #Funciones restore - depure
 
     def _friendly_backup_label(filename: str) -> str:
-        # soporta: backup_YYYYMMDD_HHMMSS.zip o db_YYYY-MM-DD_HH-MM-SS.zip (ajusta si tu formato difiere)
         m = re.search(r"(\d{8})[_-](\d{6})", filename)
         if m:
             ymd, hms = m.group(1), m.group(2)
             dt = datetime.strptime(ymd + hms, "%Y%m%d%H%M%S")
             return dt.strftime("Backup %Y-%m-%d %H:%M:%S")
         return filename
-    
+
     def _load_backup_dropdown():
         dd_restore.options = []
         bdir = (txt_backup_dir.value or "").strip()
@@ -1153,7 +1201,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             fname = os.path.basename(it["path"])
             label = _friendly_backup_label(fname)
             dd_restore.options.append(ft.dropdown.Option(it["path"], label))
-            
+
         dd_restore.value = dd_restore.options[0].key if dd_restore.options else None
         dd_restore.update()
 
@@ -1162,10 +1210,8 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         txt_restore_status.value = f"Backups encontrados: {len(dd_restore.options)}"
         txt_restore_status.color = ft.Colors.GREY_700
         txt_restore_status.update()
-        
 
     btn_refresh_backups.on_click = _on_refresh_backups
-
 
     def _on_restore_backup(_):
         bdir = (txt_backup_dir.value or "").strip()
@@ -1196,10 +1242,8 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             txt_restore_status.color = ft.Colors.GREEN_700
             txt_restore_status.update()
 
-            # refrescar lista por si se creó pre_restore
             _load_backup_dropdown()
 
-            # Sugerencia UX: avisar reinicio (solo texto)
             page.snack_bar = ft.SnackBar(content=ft.Text("Recomendación: reinicia la app para garantizar consistencia."))
             page.snack_bar.open = True
             page.update()
@@ -1208,13 +1252,11 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             txt_restore_status.value = f"❌ Error restaurando: {ex}"
             txt_restore_status.color = ft.Colors.RED_700
             txt_restore_status.update()
-            
-        #Purge silencioso
+
         keep_last = int(dd_keep_last.value or "10")
-        purge_backups(bdir, keep_last=keep_last, include_pre_restore=True)  
+        purge_backups(bdir, keep_last=keep_last, include_pre_restore=True)
 
     btn_restore.on_click = _on_restore_backup
-
 
     def _on_purge(_):
         bdir = (txt_backup_dir.value or "").strip()
@@ -1247,13 +1289,11 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             ft.dropdown.Option("1440", "Diario"),
         ],
     )
-    
+
     dd_backup_native_interval.on_change = lambda e: page.client_storage.set(
-    K_BACKUP_INTERVAL, str(dd_backup_native_interval.value or "360")
+        K_BACKUP_INTERVAL, str(dd_backup_native_interval.value or "360")
     )
 
-    
-    # Cargar estado guardado (si existe)
     saved_dir = page.client_storage.get(K_BACKUP_DIR)
     if saved_dir:
         txt_backup_dir.value = saved_dir
@@ -1269,7 +1309,6 @@ def build_admin_view(page: ft.Page) -> ft.Control:
     pick_backup_dir = ft.FilePicker()
     page.overlay.append(pick_backup_dir)
 
-    # ✅ evitar overlays duplicados
     pick_backup_dir = None
     for c in page.overlay:
         if isinstance(c, ft.FilePicker):
@@ -1279,15 +1318,10 @@ def build_admin_view(page: ft.Page) -> ft.Control:
     if pick_backup_dir is None:
         pick_backup_dir = ft.FilePicker()
         page.overlay.append(pick_backup_dir)
-            
-            
-    #CONTROLADORES Nativos
+
     lbl_last_backup = ft.Text("Último backup: —", size=12, color=ft.Colors.GREY_700)
-    btn_backup_now = ft.ElevatedButton(
-        "Hacer backup ahora",
-        icon=ft.Icons.SAVE,
-    )
-    
+    btn_backup_now = ft.ElevatedButton("Hacer backup ahora", icon=ft.Icons.SAVE)
+
     native_block = ft.Column(
         [
             ft.Text("Guardar Backup", weight="bold"),
@@ -1306,7 +1340,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             ),
         ],
         spacing=10,
-        visible=False,   # 👈 clave
+        visible=False,
     )
 
     def _on_pick_backup_dir(e: ft.FilePickerResultEvent):
@@ -1315,7 +1349,6 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             page.client_storage.set(K_BACKUP_DIR, e.path)
             txt_backup_dir.update()
 
-            # opcional: recargar lista de restore al cambiar carpeta
             _load_backup_dropdown()
             _refresh_last_backup_label()
             page.update()
@@ -1325,11 +1358,9 @@ def build_admin_view(page: ft.Page) -> ft.Control:
     btn_pick_backup_dir = ft.OutlinedButton(
         "Elegir carpeta",
         icon=ft.Icons.FOLDER_OPEN,
-        on_click=lambda _: pick_backup_dir.get_directory_path(
-            dialog_title="Selecciona carpeta destino de backups"
-        ),
+        on_click=lambda _: pick_backup_dir.get_directory_path(dialog_title="Selecciona carpeta destino de backups"),
     )
-    
+
     def _on_backup_now(e):
         bdir = (txt_backup_dir.value or "").strip()
         if not bdir:
@@ -1345,12 +1376,11 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         except Exception as ex:
             txt_restore_status.value = f"❌ Error creando backup: {ex}"
         page.update()
-        
-    btn_backup_now.on_click = _on_backup_now
-    
-    _backup_task_running = {"running": False}
-    _last_run_ts = {"ts": 0.0}  # en RAM; luego lo haremos persistente si quieres
 
+    btn_backup_now.on_click = _on_backup_now
+
+    _backup_task_running = {"running": False}
+    _last_run_ts = {"ts": 0.0}
 
     def _interval_seconds():
         v = dd_backup_native_interval.value or "Cada 6 horas"
@@ -1363,7 +1393,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         if "24" in v or "día" in v.lower():
             return 24 * 3600
         return 6 * 3600
-    
+
     async def _native_backup_loop():
         if _backup_task_running["running"]:
             return
@@ -1384,9 +1414,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
                 interval = _interval_seconds()
                 now = time.time()
 
-                # Si nunca ha corrido, forzamos "backup atrasado" al activar
                 if _last_run_ts["ts"] == 0.0:
-                    # Si hay un backup existente en la carpeta, úsalo como referencia para no disparar de inmediato
                     meta = read_last_backup_meta(bdir)
                     if meta and meta.get("epoch"):
                         _last_run_ts["ts"] = float(meta["epoch"])
@@ -1407,65 +1435,46 @@ def build_admin_view(page: ft.Page) -> ft.Control:
 
         finally:
             _backup_task_running["running"] = False
-    
-    
+
     def _refresh_backup_visibility():
         page.client_storage.set(K_BACKUP_NATIVE, bool(switch_backup_native.value))
         page.client_storage.set(K_BACKUP_INTERVAL, str(dd_backup_native_interval.value or "360"))
-        
+
         native_on = bool(switch_backup_native.value)
-
-
         native_block.visible = native_on
 
-        # badges de estado
         backup_status_native.content.value = f"Estado Backup: {'Activo' if native_on else 'Inactivo'}"
         backup_status_native.bgcolor = ft.Colors.GREEN_100 if native_on else ft.Colors.GREY_200
-
-
 
         for c in (native_block, backup_status_native):
             if c.page is not None:
                 c.update()
-                
+
         if switch_backup_native.value:
             page.run_task(_native_backup_loop)
         page.update()
-                
+
     switch_backup_native.on_change = lambda e: _refresh_backup_visibility()
-    
+
     _refresh_backup_visibility()
 
-    # Sección (contenedor)
     seccion_backups = ft.Column(
         [
             ft.Text("Backups", size=18, weight="bold"),
             ft.Text("Configura backups automáticos de la base de datos.", size=12, color=ft.Colors.GREY_700),
             ft.Divider(),
 
-            # Estado
             ft.Row([backup_status_native], spacing=10, wrap=True),
 
-            # Carpeta
             ft.Row([txt_backup_dir, btn_pick_backup_dir], spacing=10, wrap=True),
 
-            # Switches GLOBALES (arriba, limpios)
-            ft.Row(
-                [
-                    switch_backup_native,
-                ],
-                spacing=30,
-                wrap=True,
-            ),
-            
-            ft.Divider(),
+            ft.Row([switch_backup_native], spacing=30, wrap=True),
 
-            # BLOQUES CON VISIBILIDAD
+            ft.Divider(),
             native_block,
 
             ft.Divider(),
 
-            # Restore
             ft.Text("Restaurar", weight="bold"),
             ft.Row([dd_restore, btn_refresh_backups], wrap=True, spacing=10),
             ft.Row([btn_restore], spacing=10),
@@ -1473,17 +1482,13 @@ def build_admin_view(page: ft.Page) -> ft.Control:
 
             ft.Divider(),
 
-            # Depuración
             ft.Text("Depuración", weight="bold"),
             ft.Row([dd_keep_last, btn_purge], wrap=True, spacing=10),
             txt_purge_status,
-
         ],
         spacing=12,
         scroll=ft.ScrollMode.AUTO,
     )
-
-    
 
     # =====================================================================
     #                 CONTENEDOR DE SECCIONES + MENÚ IZQ
@@ -1504,7 +1509,14 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         selected=False,
         on_click=lambda e: cambiar_seccion("servicios"),
     )
-    
+
+    tile_configuracion = ft.ListTile(
+        leading=ft.Icon(ft.Icons.SETTINGS),
+        title=ft.Text("Configuración"),
+        selected=False,
+        on_click=lambda e: cambiar_seccion("configuracion"),
+    )
+
     tile_backups = ft.ListTile(
         leading=ft.Icon(ft.Icons.BACKUP),
         title=ft.Text("Backups"),
@@ -1514,23 +1526,29 @@ def build_admin_view(page: ft.Page) -> ft.Control:
 
     def cambiar_seccion(nueva: str):
         seccion_activa["value"] = nueva
+
         if nueva == "profesional":
             contenido_derecha.content = seccion_profesional
         elif nueva == "servicios":
             contenido_derecha.content = seccion_servicios
+        elif nueva == "configuracion":
+            contenido_derecha.content = seccion_configuracion
         elif nueva == "backups":
             contenido_derecha.content = ft.Container(expand=True, content=seccion_backups)
             _refresh_last_backup_label()
             _refresh_backup_visibility()
             if (txt_backup_dir.value or "").strip():
                 _load_backup_dropdown()
-        
 
+        # limpiar mensajes al salir de su sección
         if nueva != "profesional":
             mensaje_profesional.value = ""
+        if nueva != "configuracion":
+            mensaje_configuracion.value = ""
 
         tile_profesional.selected = nueva == "profesional"
         tile_servicios.selected = nueva == "servicios"
+        tile_configuracion.selected = nueva == "configuracion"
         tile_backups.selected = nueva == "backups"
 
         if contenido_derecha.page is not None:
@@ -1538,8 +1556,9 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         if tile_profesional.page is not None:
             tile_profesional.update()
             tile_servicios.update()
+            tile_configuracion.update()
             tile_backups.update()
-            
+
         page.update()
 
     cambiar_seccion("profesional")
@@ -1561,6 +1580,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
                 ft.Divider(),
                 tile_profesional,
                 tile_servicios,
+                tile_configuracion,  # ✅ Nuevo (antes de Backups)
                 tile_backups,
             ],
             spacing=5,

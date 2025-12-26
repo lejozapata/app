@@ -670,7 +670,15 @@ def build_home_view(page: ft.Page):
         cumple_list = ft.ListView(spacing=8, height=140, auto_scroll=False)
         if not cumple:
             cumple_list.controls.append(
-                ft.Text("Hoy no hay cumpleaños registrados 🎉", color="#666", text_align=ft.TextAlign.CENTER)
+                ft.Container(
+                    alignment=ft.alignment.center,
+                    padding=10,
+                    content=ft.Text(
+                        "Hoy no hay cumpleaños registrados 🎉",
+                        color=ft.Colors.GREY_700,
+                        text_align=ft.TextAlign.CENTER,
+                    ),
+                )
             )
         else:
             for c in cumple:
