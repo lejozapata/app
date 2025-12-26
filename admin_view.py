@@ -28,6 +28,8 @@ from .db import (
     listar_empresas_convenio,
     obtener_configuracion_gmail,
     guardar_configuracion_gmail,
+    obtener_configuracion_cie11,
+    guardar_configuracion_cie11,
 )
 
 BANCOS_CO = [
@@ -121,6 +123,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
     horarios = obtener_horarios_atencion()
     cfg_fact = obtener_configuracion_facturacion()
     cfg_gmail = obtener_configuracion_gmail()
+    cfg_cie11 = obtener_configuracion_cie11()
 
     seccion_activa = {"value": "profesional"}  # "profesional" | "servicios"
 
@@ -207,6 +210,48 @@ def build_admin_view(page: ft.Page) -> ft.Control:
     sw_habilitar_email = ft.Switch(
         label="Habilitar envío de correos (Gmail)",
         value=bool(cfg_gmail.get("habilitado")),
+    )
+    
+    
+    # -------- CIE-11 (ICD-11) --------
+
+    # Releases sugeridos (puedes ampliar cuando quieras)
+    RELEASES_CIE11 = [
+        "2025-01",
+        "2024-01",
+        "2023-05",
+        "2022-02",
+    ]
+
+    dd_cie11_release = ft.Dropdown(
+        label="Release CIE-11",
+        width=250,
+        options=[ft.dropdown.Option(r) for r in RELEASES_CIE11],
+        value=cfg_cie11.get("release") if cfg_cie11.get("release") in RELEASES_CIE11 else None,
+    )
+
+    txt_cie11_client_id = ft.TextField(
+        label="CIE-11 Client ID",
+        value=(cfg_cie11.get("client_id") or ""),
+        width=350,
+    )
+
+    txt_cie11_client_secret = ft.TextField(
+        label="CIE-11 Client Secret",
+        value="",  # No precargamos el secreto por seguridad
+        width=350,
+        password=True,
+        can_reveal_password=False,
+        helper_text=(
+            "Ya hay un secret guardado. Deja este campo en blanco para conservarlo."
+            if cfg_cie11.get("tiene_secret") else
+            "Se obtiene en el portal de la OMS (ICD API)."
+        ),
+    )
+
+    sw_habilitar_cie11 = ft.Switch(
+        label="Habilitar CIE-11",
+        value=bool(cfg_cie11.get("habilitado")),
     )
 
 
@@ -529,6 +574,15 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             "habilitado": bool(sw_habilitar_email.value),
         }
         guardar_configuracion_gmail(cfg_gmail_guardar)
+        
+        # ---- Configuración CIE-11 ----
+        cfg_cie11_save = {
+            "release": dd_cie11_release.value,
+            "client_id": txt_cie11_client_id.value,
+            "client_secret": txt_cie11_client_secret.value,  # si viene vacío, se conserva
+            "habilitado": sw_habilitar_cie11.value,
+        }
+        guardar_configuracion_cie11(cfg_cie11_save)
 
         page.snack_bar = ft.SnackBar(
             content=ft.Text("Configuración de horario y facturación guardada.")
@@ -564,6 +618,16 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             ),
             ft.Row([txt_gmail_user, txt_gmail_app_password], spacing=10),
             ft.Row([sw_habilitar_email], spacing=10),
+            ft.Divider(),
+            ft.Text("CIE-11 (ICD-11)", weight="bold"),
+            ft.Text(
+                "Configura el release y credenciales para consultar diagnósticos desde la API oficial.",
+                size=12,
+                color=ft.Colors.GREY_700,
+            ),
+            ft.Row([dd_cie11_release], spacing=10),
+            ft.Row([txt_cie11_client_id, txt_cie11_client_secret], spacing=10, wrap=True),
+            ft.Row([sw_habilitar_cie11], spacing=10),
             ft.Divider(),
             ft.Text("Información complementaria para facturación", weight="bold"),
             ft.Text(

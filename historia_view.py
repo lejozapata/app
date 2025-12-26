@@ -1,9 +1,15 @@
 from datetime import date, datetime
 from typing import Dict, Any, List
-from .historia_pdf import generar_pdf_historia
-from .markdown_editor import MarkdownEditor
 
 import flet as ft
+
+import asyncio
+import time
+import re
+
+from .historia_pdf import generar_pdf_historia
+from .markdown_editor import MarkdownEditor
+from .cie11_api import CIE11Client
 
 from .db import (
     listar_pacientes,
@@ -15,6 +21,10 @@ from .db import (
     eliminar_sesion_clinica,
     listar_antecedentes_medicos,
     listar_antecedentes_psicologicos,
+    # Diagnósticos
+    listar_diagnosticos_historia,
+    agregar_diagnostico_historia,
+    eliminar_diagnostico_historia,
 )
 
 
@@ -65,7 +75,6 @@ def build_historia_view(page: ft.Page) -> ft.Control:
             txt_buscar_paciente.update()
 
         cargar_historia_desde_bd()
-
         page.update()
 
     def _filtrar_pacientes(e=None):
@@ -150,6 +159,384 @@ def build_historia_view(page: ft.Page) -> ft.Control:
 
     mensaje_historia = ft.Text("", size=12, color=ft.Colors.RED_700)
 
+    # -------------------- Diagnósticos CIE (CIE-11 por API) --------------------
+
+    cie11_client = None
+
+    def _get_cie11():
+        nonlocal cie11_client
+        if cie11_client is None:
+            cie11_client = CIE11Client(language="es")
+        return cie11_client
+
+    def strip_html(s: str) -> str:
+        return re.sub(r"<[^>]+>", "", s or "")
+
+    # debounce state (DEBE ir antes de los handlers)
+    _last_search = {"q": "", "ts": 0.0}
+    _pending_task = {"task": None}
+
+    dx_table = ft.DataTable(
+        columns=[
+            ft.DataColumn(ft.Text("Sistema")),
+            ft.DataColumn(ft.Text("Código")),
+            ft.DataColumn(ft.Text("Título")),
+            ft.DataColumn(ft.Text("Acciones")),
+        ],
+        rows=[],
+        column_spacing=14,
+    )
+
+    def cargar_diagnosticos():
+        dx_table.rows.clear()
+        if not historia_actual["id"]:
+            if dx_table.page is not None:
+                dx_table.update()
+            return
+
+        dxs = [dict(r) for r in listar_diagnosticos_historia(historia_actual["id"])]
+        for d in dxs:
+            dx_id = d["id"]
+            sistema = d["sistema"]
+            codigo = d["codigo"]
+            titulo = d.get("titulo") or ""
+
+            btn_quitar = ft.TextButton(
+                "Quitar",
+                on_click=lambda e, _id=dx_id: (
+                    eliminar_diagnostico_historia(_id),
+                    cargar_diagnosticos(),
+                ),
+            )
+
+            dx_table.rows.append(
+                ft.DataRow(
+                    cells=[
+                        ft.DataCell(ft.Text(sistema)),
+                        ft.DataCell(ft.Text(codigo)),
+                        ft.DataCell(ft.Text(titulo)),
+                        ft.DataCell(btn_quitar),
+                    ]
+                )
+            )
+
+        if dx_table.page is not None:
+            dx_table.update()
+
+    txt_buscar_dx = ft.TextField(
+        label="Buscar diagnóstico (código o texto)",
+        expand=True,
+    )
+
+    chk_codigo = ft.Checkbox(label="Código", value=True)
+    chk_titulo = ft.Checkbox(label="Título", value=True)
+    chk_desc = ft.Checkbox(label="Descripción", value=True)
+
+    resultados_list = ft.ListView(expand=True, spacing=6, padding=10)
+
+    lbl_hint_busqueda = ft.Text(
+        "Escribe un término (p. ej. 'ansiedad', 'depresivo', 'insomnio') y presiona Buscar.",
+        size=12,
+        color=ft.Colors.GREY_600,
+    )
+
+    def ejecutar_busqueda_dx(e=None):
+        q_raw = (txt_buscar_dx.value or "").strip()
+        q = q_raw.strip()
+        q_upper = q.upper()
+
+        def parece_codigo_cie11(s: str) -> bool:
+            # Ejemplos: MB29, MB28.A, 6A70.3, HA60
+            return bool(re.match(r"^[A-Z0-9]{2,5}(\.[A-Z0-9]{1,4})?$", (s or "").strip().upper()))
+
+        def render_sin_resultados(mensaje: str, sugerencias: list[str] | None = None):
+            resultados_list.controls.clear()
+            msg = mensaje
+            if sugerencias:
+                msg += f" Sugerencias: {', '.join(sugerencias)}."
+            resultados_list.controls.append(ft.Text(msg, color=ft.Colors.GREY_600))
+            resultados_list.update()
+
+        def _add_factory(code: str, title: str, _uri: str):
+            def _add(_e):
+                pac = paciente_actual["value"]
+                if not pac:
+                    page.snack_bar = ft.SnackBar(content=ft.Text("Selecciona un paciente primero."))
+                    page.snack_bar.open = True
+                    page.update()
+                    return
+
+                # Si no hay historia creada aún, crearla automáticamente
+                if not historia_actual["id"]:
+                    datos_hist = {
+                        "id": None,
+                        "documento_paciente": pac["documento"],
+                        "fecha_apertura": txt_fecha_apertura.value or date.today().isoformat(),
+                        "motivo_consulta_inicial": (txt_motivo.value or "").strip() or None,
+                        "informacion_adicional": (txt_info_adicional.value or "").strip() or None,
+                    }
+                    historia_id = guardar_historia_clinica(datos_hist)
+                    historia_actual["id"] = historia_id
+
+                if not code:
+                    page.snack_bar = ft.SnackBar(content=ft.Text("Este ítem no tiene código codificable."))
+                    page.snack_bar.open = True
+                    page.update()
+                    return
+
+                try:
+                    agregar_diagnostico_historia(historia_actual["id"], "CIE-11", code, title, _uri)
+                except Exception as ex:
+                    page.snack_bar = ft.SnackBar(content=ft.Text(f"No se pudo agregar: {ex}"))
+                    page.snack_bar.open = True
+                    page.update()
+                    return
+
+                cargar_diagnosticos()
+                dlg_dx.open = False
+                page.snack_bar = ft.SnackBar(content=ft.Text("Diagnóstico agregado."))
+                page.snack_bar.open = True
+                page.update()
+
+            return _add  # <-- CRÍTICO
+
+        # ---- Reset UI ----
+        resultados_list.controls.clear()
+        resultados_list.controls.append(lbl_hint_busqueda)
+
+        if not q:
+            resultados_list.update()
+            return
+
+        # ---- Caso 1: parece código ----
+        if parece_codigo_cie11(q_upper):
+            try:
+                ent = _get_cie11().lookup_code(q_upper)  # <-- AQUÍ el cambio clave
+            except Exception as ex:
+                render_sin_resultados(f"Error en búsqueda CIE-11: {ex}")
+                return
+
+            if not ent:
+                render_sin_resultados("Código no encontrado. Verifica el código o prueba buscar por texto.")
+                return
+
+            codigo = (ent.code or q_upper).upper()
+            titulo = strip_html(ent.title or "")
+            uri = ent.uri
+
+            resultados_list.controls.clear()
+            fila = ft.Container(
+                padding=10,
+                border=ft.border.all(1, ft.Colors.GREY_300),
+                border_radius=8,
+                content=ft.Row(
+                    [
+                        ft.Container(width=90, content=ft.Text(codigo, weight="bold")),
+                        ft.Container(expand=True, content=ft.Text(titulo)),
+                        ft.ElevatedButton("Agregar", on_click=_add_factory(codigo, titulo, uri)),
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+            )
+            resultados_list.controls.append(fila)
+            resultados_list.update()
+            return
+
+        # ---- Caso 2: texto normal ----
+        # Evita búsquedas demasiado cortas
+        q_norm = (q or "").strip()
+        q_is_acronym = q_norm.isalpha() and q_norm.isupper() and 2 <= len(q_norm) <= 6
+
+        # Permitir acrónimos cortos (VIH, TB, TOC), o texto normal >= 3
+        min_len = 2 if q_is_acronym else 3
+        if len(q_norm) < min_len:
+            resultados_list.controls.clear()
+            resultados_list.controls.append(
+                ft.Text(
+                    f"Escribe al menos {min_len} caracteres para buscar.",
+                    color=ft.Colors.GREY_600,
+                )
+            )
+            resultados_list.update()
+            return
+
+        try:
+            res = _get_cie11().search(q)
+            res = res[:50]
+        except Exception as ex:
+            resultados_list.controls.clear()
+            resultados_list.controls.append(
+                ft.Text(f"Error en búsqueda CIE-11: {ex}", color=ft.Colors.RED_700)
+            )
+            resultados_list.update()
+            return
+
+        if not res:
+            sugerencias = []
+            if q.lower().startswith("depre"):
+                sugerencias = ["depresion", "depresivo", "depresivos", "distimia"]
+            render_sin_resultados("Sin resultados. Prueba otro término.", sugerencias)
+            return
+
+        resultados_list.controls.clear()
+
+        for ent in res:
+            codigo = ent.code or ""
+            titulo = strip_html(ent.title or "")
+            uri = ent.uri
+
+            fila = ft.Container(
+                padding=10,
+                border=ft.border.all(1, ft.Colors.GREY_300),
+                border_radius=8,
+                content=ft.Row(
+                    [
+                        ft.Container(width=90, content=ft.Text(codigo, weight="bold")),
+                        ft.Container(expand=True, content=ft.Text(titulo)),
+                        ft.ElevatedButton("Agregar", on_click=_add_factory(codigo, titulo, uri)),
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+            )
+            resultados_list.controls.append(fila)
+
+        resultados_list.update()
+
+    # --- búsqueda en vivo con debounce ---
+    _last_search = {"q": "", "ts": 0.0}
+    _pending_task = {"task": None}
+
+    async def _debounced_search():
+        await asyncio.sleep(0.35)
+        ejecutar_busqueda_dx()
+
+    def _on_change_buscar_dx(e):
+        q = (txt_buscar_dx.value or "").strip()
+
+        q_norm = (q or "").strip()
+        q_is_acronym = q_norm.isalpha() and q_norm.isupper() and 2 <= len(q_norm) <= 6
+        min_len = 2 if q_is_acronym else 3
+
+        if len(q_norm) < min_len:
+            resultados_list.controls.clear()
+            resultados_list.controls.append(lbl_hint_busqueda)
+            resultados_list.update()
+            return
+
+        now = time.time()
+        if q == _last_search["q"] and (now - _last_search["ts"]) < 0.4:
+            return
+
+        _last_search["q"] = q
+        _last_search["ts"] = now
+
+        # Cancelar tarea anterior
+        t = _pending_task.get("task")
+        if t:
+            try:
+                t.cancel()
+            except Exception:
+                pass
+
+        # ✅ NOTA: se pasa la función async, NO se llama
+        _pending_task["task"] = page.run_task(_debounced_search)
+
+    # IMPORTANTE: asignar el handler después de definirlo
+    txt_buscar_dx.on_change = _on_change_buscar_dx
+    txt_buscar_dx.on_submit = ejecutar_busqueda_dx
+    
+    # Dialogo de búsqueda de diagnósticos
+
+    dlg_dx = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Agregar diagnóstico (CIE-11)"),
+        content=ft.Column(
+            [
+                ft.Row([txt_buscar_dx], alignment=ft.MainAxisAlignment.START),
+                ft.Row([chk_codigo, chk_titulo, chk_desc], spacing=10),
+                ft.Row(
+                    [
+                        ft.ElevatedButton(
+                            "Buscar",
+                            icon=ft.Icons.SEARCH,
+                            on_click=ejecutar_busqueda_dx,
+                        )
+                    ],
+                    alignment=ft.MainAxisAlignment.END,
+                ),
+                ft.Container(
+                    height=380,
+                    width=920,
+                    padding=10,
+                    border=ft.border.all(1, ft.Colors.GREY_300),
+                    border_radius=8,
+                    content=resultados_list,
+                ),
+            ],
+            tight=True,
+        ),
+        actions=[
+            ft.TextButton(
+                "Cerrar",
+                on_click=lambda e: (
+                    setattr(dlg_dx, "open", False),
+                    page.update(),
+                ),
+            )
+        ],
+    )
+
+    def abrir_dialogo_dx(e):
+        if dlg_dx not in page.overlay:
+            page.overlay.append(dlg_dx)
+
+        # Reset UI del diálogo cada vez
+        txt_buscar_dx.value = ""
+        resultados_list.controls.clear()
+        resultados_list.controls.append(lbl_hint_busqueda)
+
+        dlg_dx.open = True
+        page.update()
+
+    def abrir_catalogo_cie11(e):
+        try:
+            # si tu CIE11Client ya está instanciado, esto te da el release real
+            release = _get_cie11().release_id
+        except Exception:
+            release = "2025-01"
+
+        url = f"https://icd.who.int/browse/{release}/mms/es"
+        page.launch_url(url)
+
+    btn_agregar_dx = ft.ElevatedButton(
+        "Agregar diagnóstico CIE",
+        icon=ft.Icons.ADD,
+        on_click=abrir_dialogo_dx,
+    )
+
+    btn_info_cie11 = ft.IconButton(
+        icon=ft.Icons.HELP_OUTLINE, # TAMBIEN SIRVE Icons.INFO/INFO_OUTLINE
+        icon_color=ft.Colors.BLUE_600,
+        icon_size=18,
+        tooltip="Abrir catálogo CIE-11 (OMS)",
+        on_click=abrir_catalogo_cie11,
+    )
+
+    # Row de acciones
+    acciones_dx = ft.Row(
+        [
+            btn_agregar_dx,
+            ft.Container(width=2),
+            btn_info_cie11,
+        ],
+        alignment=ft.MainAxisAlignment.START,
+        spacing=0,
+    )
+
+    # -------------------- Cargar historia --------------------
+
     def cargar_historia_desde_bd():
         pac = paciente_actual["value"]
         if not pac:
@@ -189,6 +576,7 @@ def build_historia_view(page: ft.Page) -> ft.Control:
             if c.page is not None:
                 c.update()
 
+        cargar_diagnosticos()
         cargar_sesiones()
 
     def guardar_historia(e):
@@ -214,41 +602,36 @@ def build_historia_view(page: ft.Page) -> ft.Control:
         historia_actual["id"] = historia_id
 
         mensaje_historia.value = "Historia clínica guardada correctamente."
-        page.snack_bar = ft.SnackBar(
-            content=ft.Text("Historia clínica guardada."),
-        )
+        page.snack_bar = ft.SnackBar(content=ft.Text("Historia clínica guardada."))
         page.snack_bar.open = True
         if mensaje_historia.page is not None:
             mensaje_historia.update()
         page.update()
 
+        cargar_diagnosticos()
         cargar_sesiones()
 
     def generar_pdf_historia_click(e):
         pac = paciente_actual["value"]
         if not pac:
-            page.snack_bar = ft.SnackBar(
-                content=ft.Text("Debes seleccionar un paciente primero.")
-            )
+            page.snack_bar = ft.SnackBar(content=ft.Text("Debes seleccionar un paciente primero."))
             page.snack_bar.open = True
             page.update()
             return
 
         try:
             generar_pdf_historia(pac["documento"], abrir=True)
-            page.snack_bar = ft.SnackBar(
-                content=ft.Text("PDF de historia clínica generado.")
-            )
+            page.snack_bar = ft.SnackBar(content=ft.Text("PDF de historia clínica generado."))
         except Exception as ex:
-            page.snack_bar = ft.SnackBar(
-                content=ft.Text(f"Error al generar el PDF de historia clínica: {ex}")
-            )
+            page.snack_bar = ft.SnackBar(content=ft.Text(f"Error al generar el PDF de historia clínica: {ex}"))
 
         page.snack_bar.open = True
         page.update()
 
     btn_guardar_historia = ft.ElevatedButton(
-        "Guardar historia clínica", icon=ft.Icons.SAVE, on_click=guardar_historia
+        "Guardar historia clínica",
+        icon=ft.Icons.SAVE,
+        on_click=guardar_historia,
     )
 
     btn_pdf_historia = ft.ElevatedButton(
@@ -281,6 +664,27 @@ def build_historia_view(page: ft.Page) -> ft.Control:
             ),
             txt_motivo,
             txt_info_adicional,
+
+            # ===================== DIAGNÓSTICOS =====================
+            ft.Text("Diagnósticos (CIE)", weight="bold"),
+            ft.Text(
+                "Registra uno o varios diagnósticos en la historia clínica general.",
+                size=11,
+                color=ft.Colors.GREY_700,
+            ),
+            ft.Row(
+                [acciones_dx],
+                alignment=ft.MainAxisAlignment.START,
+                spacing=10,
+            ),
+            ft.Container(
+                padding=10,
+                border=ft.border.all(1, ft.Colors.GREY_300),
+                border_radius=8,
+                content=ft.Column([dx_table], scroll=ft.ScrollMode.AUTO),
+            ),
+            # =========================================================
+
             ft.Row(
                 [
                     ft.Column(
@@ -295,6 +699,7 @@ def build_historia_view(page: ft.Page) -> ft.Control:
                             ),
                         ],
                         spacing=5,
+                        wrap=True,
                     ),
                     ft.Column(
                         [
@@ -308,23 +713,30 @@ def build_historia_view(page: ft.Page) -> ft.Control:
                             ),
                         ],
                         spacing=5,
+                        wrap=True,
                     ),
                 ],
                 spacing=20,
             ),
             mensaje_historia,
-            ft.Row(
-                [
-                    btn_guardar_historia,
-                    btn_pdf_historia,
-                ],
-                alignment=ft.MainAxisAlignment.END,
+
+            ft.Container(
+                padding=ft.padding.only(bottom=6),
+                content=ft.Row(
+                    [btn_guardar_historia, btn_pdf_historia],
+                    alignment=ft.MainAxisAlignment.START,
+                    spacing=10,
+                    wrap=True,   # si no cabe, baja a la siguiente línea
+                ),
             ),
-        ],
-        spacing=12,
-        expand=True,
-        scroll=ft.ScrollMode.AUTO,
-    )
+
+            # colchón para que el scroll nunca “se coma” el footer
+            ft.Container(height=24),
+            ],
+            spacing=12,
+            scroll=ft.ScrollMode.AUTO,
+            )
+    
 
     # -------------------- Controles de sesiones --------------------
 
@@ -495,9 +907,7 @@ def build_historia_view(page: ft.Page) -> ft.Control:
 
     def eliminar_sesion_click(sesion_id: int):
         eliminar_sesion_clinica(sesion_id)
-        page.snack_bar = ft.SnackBar(
-            content=ft.Text("Sesión eliminada correctamente."),
-        )
+        page.snack_bar = ft.SnackBar(content=ft.Text("Sesión eliminada correctamente."))
         page.snack_bar.open = True
         page.update()
         cargar_sesiones()
@@ -514,11 +924,9 @@ def build_historia_view(page: ft.Page) -> ft.Control:
             datos_hist = {
                 "id": None,
                 "documento_paciente": pac["documento"],
-                "fecha_apertura": txt_fecha_apertura.value
-                or date.today().isoformat(),
+                "fecha_apertura": txt_fecha_apertura.value or date.today().isoformat(),
                 "motivo_consulta_inicial": (txt_motivo.value or "").strip() or None,
-                "informacion_adicional": (txt_info_adicional.value or "").strip()
-                or None,
+                "informacion_adicional": (txt_info_adicional.value or "").strip() or None,
             }
             historia_id = guardar_historia_clinica(datos_hist)
             historia_actual["id"] = historia_id
@@ -526,9 +934,7 @@ def build_historia_view(page: ft.Page) -> ft.Control:
         fecha_sesion = txt_fecha_sesion.value or date.today().isoformat()
 
         contenido_texto = (
-            md_editor.get_value()
-            if switch_markdown.value
-            else (txt_contenido_sesion.value or "")
+            md_editor.get_value() if switch_markdown.value else (txt_contenido_sesion.value or "")
         ).strip()
 
         if not contenido_texto:
@@ -542,19 +948,13 @@ def build_historia_view(page: ft.Page) -> ft.Control:
             "historia_id": historia_actual["id"],
             "fecha": fecha_sesion,
             "titulo": (txt_titulo_sesion.value or "").strip() or None,
-            "contenido": (
-                md_editor.get_value()
-                if switch_markdown.value
-                else (txt_contenido_sesion.value or "")
-            ).strip(),
+            "contenido": contenido_texto,
             "observaciones": (txt_obs_sesion.value or "").strip() or None,
         }
 
         guardar_sesion_clinica(datos_sesion)
 
-        page.snack_bar = ft.SnackBar(
-            content=ft.Text("Sesión clínica guardada correctamente."),
-        )
+        page.snack_bar = ft.SnackBar(content=ft.Text("Sesión clínica guardada correctamente."))
         page.snack_bar.open = True
         page.update()
 
@@ -599,16 +999,13 @@ def build_historia_view(page: ft.Page) -> ft.Control:
                     ft.TextButton("Nueva sesión", on_click=lambda e: limpiar_form_sesion()),
                     btn_guardar_sesion,
                 ],
-                alignment=ft.MainAxisAlignment.END,
+                alignment=ft.MainAxisAlignment.START,
             ),
             ft.Divider(),
             ft.Text("Sesiones registradas", weight="bold"),
             ft.Container(
                 height=260,
-                content=ft.Column(
-                    [tabla_sesiones],
-                    scroll=ft.ScrollMode.AUTO,
-                ),
+                content=ft.Column([tabla_sesiones], scroll=ft.ScrollMode.AUTO),
             ),
         ],
         spacing=10,
@@ -682,15 +1079,12 @@ def build_historia_view(page: ft.Page) -> ft.Control:
     def generar_historico_click(e):
         pac = paciente_actual["value"]
         if not pac:
-            page.snack_bar = ft.SnackBar(
-                content=ft.Text("Debes seleccionar un paciente primero.")
-            )
+            page.snack_bar = ft.SnackBar(content=ft.Text("Debes seleccionar un paciente primero."))
             page.snack_bar.open = True
             page.update()
             return
 
         modo = rd_modo_historico.value or "todo"
-
         fecha_desde = None
         fecha_hasta = None
 
@@ -704,12 +1098,8 @@ def build_historia_view(page: ft.Page) -> ft.Control:
                 return
 
             try:
-                fecha_desde = datetime.strptime(
-                    txt_fecha_desde_hist.value, "%Y-%m-%d"
-                ).date()
-                fecha_hasta = datetime.strptime(
-                    txt_fecha_hasta_hist.value, "%Y-%m-%d"
-                ).date()
+                fecha_desde = datetime.strptime(txt_fecha_desde_hist.value, "%Y-%m-%d").date()
+                fecha_hasta = datetime.strptime(txt_fecha_hasta_hist.value, "%Y-%m-%d").date()
             except ValueError:
                 page.snack_bar = ft.SnackBar(
                     content=ft.Text("Las fechas del histórico no tienen un formato válido.")
@@ -729,13 +1119,9 @@ def build_historia_view(page: ft.Page) -> ft.Control:
                     fecha_hasta=fecha_hasta,
                 )
 
-            page.snack_bar = ft.SnackBar(
-                content=ft.Text("Histórico generado correctamente.")
-            )
+            page.snack_bar = ft.SnackBar(content=ft.Text("Histórico generado correctamente."))
         except Exception as ex:
-            page.snack_bar = ft.SnackBar(
-                content=ft.Text(f"Error al generar el histórico: {ex}")
-            )
+            page.snack_bar = ft.SnackBar(content=ft.Text(f"Error al generar el histórico: {ex}"))
 
         page.snack_bar.open = True
         page.update()
@@ -796,7 +1182,7 @@ def build_historia_view(page: ft.Page) -> ft.Control:
                         on_click=generar_historico_click,
                     ),
                 ],
-                alignment=ft.MainAxisAlignment.END,
+                alignment=ft.MainAxisAlignment.START,
             ),
         ],
         spacing=12,
@@ -897,11 +1283,17 @@ def build_historia_view(page: ft.Page) -> ft.Control:
             except Exception:
                 pass
 
+    contenido_derecha_scroll_x = ft.Row(
+        [contenido_derecha],
+        scroll=ft.ScrollMode.AUTO,   # <-- scroll horizontal
+        expand=True,
+    )
+
     raiz = ft.Row(
         [
             menu_izq,
             ft.Container(width=16),
-            contenido_derecha,
+            contenido_derecha_scroll_x,
         ],
         expand=True,
         vertical_alignment=ft.CrossAxisAlignment.START,

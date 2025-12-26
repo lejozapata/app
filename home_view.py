@@ -22,18 +22,18 @@ MESES = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"
 PERIODOS = ["Año actual", "Último mes", "Última semana"]
 
 MONTH_COLORS = [
-    ft.Colors.BLUE_400,
-    ft.Colors.CYAN_400,
-    ft.Colors.TEAL_400,
-    ft.Colors.GREEN_400,
-    ft.Colors.LIME_500,
-    ft.Colors.YELLOW_600,
-    ft.Colors.AMBER_600,
-    ft.Colors.ORANGE_600,
-    ft.Colors.DEEP_ORANGE_600,
-    ft.Colors.RED_400,
-    ft.Colors.PINK_400,
-    ft.Colors.PURPLE_400,
+    "#dc774a",  # naranja marca
+    "#f4a24c",  # naranja claro
+    "#a94416",  # naranja oscuro
+    "#c1dbd0",  # menta suave
+    "#cad8cf",  # verde/gris suave
+    "#ecdccc",  # beige
+    "#dc7648",  # variante naranja (si la usas)
+    "#f4a24c",  # repetir (funciona)
+    "#a94416",  # repetir
+    "#6b7280",  # gris fuerte (reemplaza blanco tráfico)
+    "#374151",  # gris más fuerte
+    "#c1dbd0",  # repetir menta
 ]
 
 
@@ -60,7 +60,7 @@ def _row(r, key, default=""):
 def _get_logo_path():
     data_dir = os.path.dirname(DB_PATH)
     img_dir = os.path.join(data_dir, "imagenes")
-    return os.path.join(img_dir, "logo.png")
+    return os.path.join(img_dir, "logosmall.png")
 
 
 def _periodo_subtitulo(periodo: str) -> str:

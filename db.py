@@ -209,6 +209,29 @@ def init_db() -> None:
         );
         """
     )
+    
+    # -------------------- Configuración CIE-11 (ICD-11) --------------------
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS configuracion_cie11 (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            release TEXT,
+            client_id TEXT,
+            client_secret TEXT,   -- encriptado
+            habilitado INTEGER NOT NULL DEFAULT 0,
+            creada_en TEXT DEFAULT (datetime('now','localtime')),
+            actualizada_en TEXT
+        );
+        """
+    )
+
+    # Asegurar fila singleton
+    cur.execute(
+        """
+        INSERT OR IGNORE INTO configuracion_cie11 (id, release, client_id, client_secret, habilitado)
+        VALUES (1, NULL, NULL, NULL, 0);
+        """
+    )
 
 # Tabla de servicios / modalidades de cita
     cur.execute(
@@ -455,6 +478,26 @@ def init_db() -> None:
         );
         """
     )
+    
+    # Tabla de diagnósticos asociados a una historia clínica
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS historia_diagnosticos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        historia_id INTEGER NOT NULL,
+        sistema TEXT NOT NULL CHECK (sistema IN ('CIE-11','CIE-10')),
+        codigo TEXT NOT NULL,
+        titulo TEXT,
+        uri TEXT,
+        fecha_registro TEXT DEFAULT (datetime('now','localtime')),
+        FOREIGN KEY (historia_id) REFERENCES historia_clinica(id) ON DELETE CASCADE
+        );
+        """
+    )
+    cur.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_historia_dx
+        ON historia_diagnosticos (historia_id, sistema, codigo);
+    """)
     
     conn.commit()
     conn.close()
@@ -819,6 +862,44 @@ def guardar_historia_clinica(datos: Dict[str, Any]) -> int:
     conn.commit()
     conn.close()
     return historia_id
+
+# Diagnosticos Historia Clínica
+
+def listar_diagnosticos_historia(historia_id: int):
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT * FROM historia_diagnosticos
+        WHERE historia_id = ?
+        ORDER BY datetime(fecha_registro) DESC, id DESC;
+        """,
+        (int(historia_id),),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+def agregar_diagnostico_historia(historia_id: int, sistema: str, codigo: str, titulo: str | None = None, uri: str | None = None):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT OR IGNORE INTO historia_diagnosticos (historia_id, sistema, codigo, titulo, uri)
+        VALUES (?, ?, ?, ?, ?);
+        """,
+        (int(historia_id), sistema, codigo, titulo, uri),
+    )
+    conn.commit()
+    conn.close()
+
+def eliminar_diagnostico_historia(dx_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM historia_diagnosticos WHERE id = ?;", (int(dx_id),))
+    conn.commit()
+    conn.close()
 
 
 def listar_sesiones_clinicas(historia_id: int) -> List[sqlite3.Row]:
@@ -3301,6 +3382,86 @@ def guardar_configuracion_gmail(cfg: dict) -> None:
             WHERE id = 1;
             """,
             (gmail_user, new_password, habilitado),
+        )
+
+    conn.commit()
+    conn.close()
+    
+    
+from .crypto_utils import encrypt_str, decrypt_str  # ajusta import si aplica
+
+def obtener_configuracion_cie11() -> dict:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT release, client_id, client_secret, habilitado
+        FROM configuracion_cie11
+        WHERE id = 1
+        """
+    )
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        return {
+            "release": None,
+            "client_id": None,
+            "tiene_secret": False,
+            "habilitado": False,
+        }
+
+    release, client_id, client_secret_enc, habilitado = row
+    return {
+        "release": release,
+        "client_id": client_id,
+        "tiene_secret": bool(client_secret_enc),
+        "habilitado": bool(habilitado),
+    }
+
+
+def guardar_configuracion_cie11(cfg: dict) -> None:
+    """
+    cfg:
+      - release: str|None
+      - client_id: str|None
+      - client_secret: str|None  (PLANO desde UI; si viene vacío, se conserva el anterior)
+      - habilitado: bool|int
+    """
+    release = (cfg.get("release") or "").strip() or None
+    client_id = (cfg.get("client_id") or "").strip() or None
+    client_secret = (cfg.get("client_secret") or "").strip()  # puede venir vacío
+    habilitado = 1 if bool(cfg.get("habilitado")) else 0
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    # Si el secreto viene vacío, conservar el existente
+    if not client_secret:
+        cur.execute(
+            """
+            UPDATE configuracion_cie11
+               SET release = ?,
+                   client_id = ?,
+                   habilitado = ?,
+                   actualizada_en = datetime('now','localtime')
+             WHERE id = 1
+            """,
+            (release, client_id, habilitado),
+        )
+    else:
+        client_secret_enc = encrypt_str(client_secret)
+        cur.execute(
+            """
+            UPDATE configuracion_cie11
+               SET release = ?,
+                   client_id = ?,
+                   client_secret = ?,
+                   habilitado = ?,
+                   actualizada_en = datetime('now','localtime')
+             WHERE id = 1
+            """,
+            (release, client_id, client_secret_enc, habilitado),
         )
 
     conn.commit()

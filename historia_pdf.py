@@ -16,6 +16,7 @@ from reportlab.platypus import (
 )
 from reportlab.lib.enums import TA_LEFT, TA_CENTER
 from reportlab.lib import colors
+
 from .fechas import calcular_edad
 from .paths import get_historias_dir
 from .db import (
@@ -25,7 +26,9 @@ from .db import (
     listar_antecedentes_medicos,
     listar_antecedentes_psicologicos,
     listar_sesiones_clinicas,
+    listar_diagnosticos_historia,  # <-- NUEVO
 )
+
 
 # ---------- Utilidades de rutas ----------
 
@@ -34,11 +37,8 @@ def _get_paths_historia():
     """Devuelve (directorio_historia, ruta_logo) usando la misma base que facturas."""
     data_dir = os.path.dirname(DB_PATH)
     img_dir = os.path.join(data_dir, "imagenes")
-    #historias_dir = os.path.join(data_dir, "historias_pdf")
-    #os.makedirs(historias_dir, exist_ok=True)
 
     historias_dir = get_historias_dir()  # 👈 Mis Documentos
-
     logo_path = os.path.join(img_dir, "logo.png")
     return historias_dir, logo_path
 
@@ -101,7 +101,6 @@ def markdown_to_html(text: str) -> str:
         return ""
 
     text = str(text)
-
     text = escape(text)
 
     text = re.sub(
@@ -126,7 +125,6 @@ def markdown_to_html(text: str) -> str:
     )
 
     text = text.replace("\n", "<br/>")
-
     return text
 
 
@@ -165,7 +163,6 @@ def generar_pdf_historia(
     Genera el PDF de historia clínica del paciente.
     Si se proporcionan fecha_desde y fecha_hasta, solo incluye las sesiones
     dentro de ese rango (ambos extremos inclusive).
-    El archivo se crea en ./historias_pdf/ dentro de la ruta de datos.
     """
     pac_row = obtener_paciente(documento_paciente)
     if not pac_row:
@@ -184,6 +181,7 @@ def generar_pdf_historia(
 
     # --- Filtrado opcional por rango de fechas ---
     if fecha_desde and fecha_hasta:
+
         def _parse_fecha(fecha_raw):
             if isinstance(fecha_raw, datetime):
                 return fecha_raw.date()
@@ -206,6 +204,10 @@ def generar_pdf_historia(
 
     antecedentes_med = listar_antecedentes_medicos(documento_paciente)
     antecedentes_psico = listar_antecedentes_psicologicos(documento_paciente)
+
+    # NUEVO: diagnósticos
+    dx_rows = listar_diagnosticos_historia(historia["id"])
+    diagnosticos = [dict(d) for d in dx_rows][::-1]  # antiguos primero
 
     historias_dir, logo_path = _get_paths_historia()
     archivo_pdf = os.path.join(
@@ -235,9 +237,7 @@ def generar_pdf_historia(
     story.append(Paragraph("HISTORIA CLÍNICA", TITLE_STYLE))
 
     fecha_impresion = datetime.now().strftime("%d/%m/%Y %H:%M")
-    story.append(
-        _p(f"Fecha de generación del informe: {fecha_impresion}", SMALL_STYLE)
-    )
+    story.append(_p(f"Fecha de generación del informe: {fecha_impresion}", SMALL_STYLE))
     story.append(Spacer(1, 8))
 
     # ==========================================================
@@ -248,15 +248,11 @@ def generar_pdf_historia(
     story.append(Spacer(1, 4))
 
     def _val(campo: str):
-        # Alias / compatibilidad de nombres
         if campo == "correo":
             v = pac.get("email") or pac.get("correo")
             return v if v not in (None, "", "None") else "-"
-
-        # Campo calculado
         if campo == "edad":
             return calcular_edad(pac.get("fecha_nacimiento"))
-
         v = pac.get(campo)
         return v if v not in (None, "", "None") else "-"
 
@@ -324,9 +320,7 @@ def generar_pdf_historia(
     # ==========================================================
 
     story.append(Paragraph("Historia inicial", SECTION_TITLE_STYLE))
-    story.append(
-        _p(f"Fecha de apertura: {historia['fecha_apertura']}", SMALL_STYLE, bold=True)
-    )
+    story.append(_p(f"Fecha de apertura: {historia['fecha_apertura']}", SMALL_STYLE, bold=True))
 
     if historia.get("motivo_consulta_inicial"):
         story.append(_p("Motivo de consulta:", NORMAL_STYLE, bold=True))
@@ -338,14 +332,28 @@ def generar_pdf_historia(
         story.append(_p(historia["informacion_adicional"], NORMAL_STYLE))
         story.append(Spacer(1, 6))
 
+    # ==========================================================
+    # DIAGNÓSTICOS (NUEVO)
+    # ==========================================================
+
     story.append(Spacer(1, 6))
+    story.append(Paragraph("Diagnósticos (CIE)", SECTION_TITLE_STYLE))
+
+    if diagnosticos:
+        for d in diagnosticos:
+            sistema = d.get("sistema") or ""
+            codigo = d.get("codigo") or ""
+            titulo = d.get("titulo") or ""
+            story.append(_p(f"{sistema} {codigo} - {titulo}", NORMAL_STYLE))
+    else:
+        story.append(_p("No hay diagnósticos registrados.", NORMAL_STYLE))
+
+    story.append(Spacer(1, 8))
     story.append(
         Table(
             [[""]],
             colWidths=[170 * mm],
-            style=TableStyle(
-                [("LINEBELOW", (0, 0), (-1, -1), 0.6, colors.HexColor("#DDDDDD"))]
-            ),
+            style=TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.6, colors.HexColor("#DDDDDD"))]),
         )
     )
     story.append(Spacer(1, 8))
@@ -376,9 +384,7 @@ def generar_pdf_historia(
         Table(
             [[""]],
             colWidths=[170 * mm],
-            style=TableStyle(
-                [("LINEBELOW", (0, 0), (-1, -1), 0.6, colors.HexColor("#DDDDDD"))]
-            ),
+            style=TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.6, colors.HexColor("#DDDDDD"))]),
         )
     )
     story.append(Spacer(1, 8))
@@ -388,18 +394,14 @@ def generar_pdf_historia(
     # ==========================================================
 
     story.append(Paragraph("Sesiones clínicas", SECTION_TITLE_STYLE))
-    story.append(
-        _p("Listado de las sesiones registradas en la historia clínica.", SMALL_STYLE)
-    )
+    story.append(_p("Listado de las sesiones registradas en la historia clínica.", SMALL_STYLE))
     story.append(Spacer(1, 4))
 
     if not sesiones:
         story.append(_p("No hay sesiones registradas.", NORMAL_STYLE))
     else:
         for idx, s in enumerate(sesiones, start=1):
-            story.append(
-                _p(f"Cita {idx} - Fecha: {s['fecha']}", NORMAL_STYLE, bold=True)
-            )
+            story.append(_p(f"Cita {idx} - Fecha: {s['fecha']}", NORMAL_STYLE, bold=True))
             story.append(Spacer(1, 2))
 
             titulo = s.get("titulo") or ""
@@ -419,18 +421,9 @@ def generar_pdf_historia(
             story.append(
                 Table(
                     [[""]],
-
                     colWidths=[170 * mm],
                     style=TableStyle(
-                        [
-                            (
-                                "LINEBELOW",
-                                (0, 0),
-                                (-1, -1),
-                                0.4,
-                                colors.HexColor("#E0E0E0"),
-                            )
-                        ]
+                        [("LINEBELOW", (0, 0), (-1, -1), 0.4, colors.HexColor("#E0E0E0"))]
                     ),
                 )
             )
