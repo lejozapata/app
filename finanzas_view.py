@@ -757,8 +757,8 @@ def build_finanzas_view(page: ft.Page) -> ft.Control:
                 weight=ft.FontWeight.BOLD,
             ),
             ft.Text(
-                "Aquí Sara registra los paquetes que compra para el consultorio. "
-                "Más adelante los vamos a consumir automáticamente con las citas presenciales.",
+                "Aquí Se registran los paquetes de consultorio de Sinapser. "
+                "Se consumen automáticamente con las citas presenciales.",
                 size=11,
                 color=ft.Colors.GREY_700,
             ),

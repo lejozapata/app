@@ -3391,6 +3391,194 @@ def get_documento_generado(tipo: str, documento_paciente: str, cita_id: int | No
     return row["path"] if row else None
 
 
+# ==========================
+# DASHBOARD / HOME (KPIs)
+# ==========================
+
+# ---------------- HOME helpers ----------------
+
+def _rango_periodo_home(periodo: str):
+    hoy = date.today()
+    if periodo == "Última semana":
+        desde = hoy - timedelta(days=7)
+        hasta = hoy
+        # para datetime comparisons:
+        return (
+            desde.strftime("%Y-%m-%d 00:00"),
+            hasta.strftime("%Y-%m-%d 23:59"),
+            desde.strftime("%Y-%m-%d"),
+            hasta.strftime("%Y-%m-%d"),
+        )
+    if periodo == "Último mes":
+        desde = hoy.replace(day=1)
+        hasta = hoy
+        return (
+            desde.strftime("%Y-%m-%d 00:00"),
+            hasta.strftime("%Y-%m-%d 23:59"),
+            desde.strftime("%Y-%m-%d"),
+            hasta.strftime("%Y-%m-%d"),
+        )
+    # Año actual (INCLUYE citas futuras del mismo año)
+    desde = date(hoy.year, 1, 1)
+    hasta = date(hoy.year, 12, 31)
+    return (
+        desde.strftime("%Y-%m-%d 00:00"),
+        hasta.strftime("%Y-%m-%d 23:59"),
+        desde.strftime("%Y-%m-%d"),
+        hasta.strftime("%Y-%m-%d"),
+    )
+
+
+def obtener_cumpleanios_hoy_ddmmyyyy() -> List[Dict[str, Any]]:
+    """
+    Cumpleaños para pacientes con fecha_nacimiento guardada como 'DD-MM-YYYY'.
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("SELECT documento, nombre_completo, fecha_nacimiento FROM pacientes;")
+    rows = cur.fetchall()
+    conn.close()
+
+    hoy = date.today()
+    out: List[Dict[str, Any]] = []
+
+    for r in rows:
+        fn = (r["fecha_nacimiento"] or "").strip()
+        try:
+            nac = datetime.strptime(fn, "%d-%m-%Y").date()
+        except Exception:
+            continue
+
+        if nac.day == hoy.day and nac.month == hoy.month:
+            edad_cumple = hoy.year - nac.year
+            out.append(
+                {
+                    "documento": r["documento"],
+                    "nombre_completo": r["nombre_completo"],
+                    "edad": edad_cumple,
+                }
+            )
+
+    return out
+
+
+def contar_pacientes() -> int:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM pacientes;")
+    total = int(cur.fetchone()[0] or 0)
+    conn.close()
+    return total
+
+
+def contar_citas_periodo(periodo: str) -> int:
+    dt_desde, dt_hasta, _, _ = _rango_periodo_home(periodo)
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT COUNT(*)
+        FROM citas
+        WHERE datetime(fecha_hora) >= datetime(?)
+          AND datetime(fecha_hora) <= datetime(?);
+        """,
+        (dt_desde, dt_hasta),
+    )
+    total = int(cur.fetchone()[0] or 0)
+    conn.close()
+    return total
+
+
+def citas_por_mes_anio(anio: int) -> List[int]:
+    """
+    12 meses para gráficas. Asume fecha_hora en formato compatible con datetime().
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT CAST(strftime('%m', datetime(fecha_hora)) AS INTEGER) AS mes,
+               COUNT(*) AS total
+        FROM citas
+        WHERE strftime('%Y', datetime(fecha_hora)) = ?
+        GROUP BY mes
+        ORDER BY mes;
+        """,
+        (str(anio),),
+    )
+    data = [0] * 12
+    for r in cur.fetchall():
+        m = int(r["mes"])
+        data[m - 1] = int(r["total"] or 0)
+    conn.close()
+    return data
+
+
+def tasa_asistencia(periodo: str) -> Dict[str, Any]:
+    dt_desde, dt_hasta, _, _ = _rango_periodo_home(periodo)
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+          SUM(CASE WHEN lower(estado)='confirmado' THEN 1 ELSE 0 END) AS confirmadas,
+          SUM(CASE WHEN lower(estado)='no_asistio' THEN 1 ELSE 0 END) AS no_asistio,
+          COUNT(*) AS total
+        FROM citas
+        WHERE datetime(fecha_hora) >= datetime(?)
+          AND datetime(fecha_hora) <= datetime(?);
+        """,
+        (dt_desde, dt_hasta),
+    )
+    r = cur.fetchone()
+    conn.close()
+
+    confirmadas = int(r["confirmadas"] or 0)
+    no_asistio = int(r["no_asistio"] or 0)
+    total = int(r["total"] or 0)
+
+    denom = max(1, total)
+    tasa = round((confirmadas / denom) * 100)
+
+    return {
+        "confirmadas": confirmadas,
+        "no_asistio": no_asistio,
+        "tasa_pct": tasa,
+        "total": total,
+    }
+
+
+def top_5_pacientes_frecuentes(periodo: str) -> List[Dict[str, Any]]:
+    dt_desde, dt_hasta, _, _ = _rango_periodo_home(periodo)
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+          p.nombre_completo,
+          c.documento_paciente,
+          COUNT(*) AS cantidad
+        FROM citas c
+        JOIN pacientes p ON p.documento = c.documento_paciente
+        WHERE datetime(c.fecha_hora) >= datetime(?)
+          AND datetime(c.fecha_hora) <= datetime(?)
+        GROUP BY c.documento_paciente, p.nombre_completo
+        ORDER BY cantidad DESC
+        LIMIT 5;
+        """,
+        (dt_desde, dt_hasta),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [
+        {"nombre_completo": r["nombre_completo"], "documento": r["documento_paciente"], "cantidad": int(r["cantidad"] or 0)}
+        for r in rows
+    ]
+
 
 
 

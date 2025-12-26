@@ -10,6 +10,7 @@ from .finanzas_view import build_finanzas_view
 from .citas_tabla_view import build_citas_tabla_view
 from .documentos_view import build_documentos_view
 from .ui_config import BRAND_BG, BRAND_PRIMARY, TEXT_MAIN
+from .home_view import build_home_view
 
 
 
@@ -55,6 +56,10 @@ def main(page: ft.Page):
     body = ft.Container(expand=True)
 
     # ----- Handlers para cambiar de vista -----
+    
+    def mostrar_home(e=None):
+        body.content = build_home_view(page)
+        page.update()
 
     def mostrar_pacientes(e=None):
         body.content = build_pacientes_view(page)
@@ -99,6 +104,11 @@ def main(page: ft.Page):
 # ----- Top Bar para admin -----
     top_bar = ft.Row(
         [
+            ft.IconButton(
+                icon=ft.Icons.HOME,
+                tooltip="Home",
+                on_click=mostrar_home,
+            ),
             ft.Row(
                 [
                     ft.ElevatedButton("Pacientes", on_click=mostrar_pacientes),
@@ -119,7 +129,8 @@ def main(page: ft.Page):
     )
 
     # Vista por defecto al abrir la app
-    mostrar_pacientes()
+    #mostrar_pacientes()
+    mostrar_home()
 
  # Muestra la barra superior para admin
     page.add(
