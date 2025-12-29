@@ -1,5 +1,6 @@
 import os
 import smtplib
+import threading
 from email.message import EmailMessage
 from .notificaciones_email import (
     enviar_correo_cita,
@@ -11,6 +12,12 @@ from datetime import date, datetime, timedelta
 import threading
 import urllib.parse
 from .citas_tabla_view import build_citas_tabla_view
+from .google_calendar import (
+    sync_cita_to_google,
+    delete_cita_from_google,
+    sync_bloqueo_to_google,
+    delete_bloqueo_from_google,
+)
 
 from .db import (
     obtener_horarios_atencion,
@@ -32,6 +39,8 @@ from .db import (
     consumir_cita_paquete_arriendo,
     devolver_cita_paquete_arriendo,
     obtener_cita_con_paciente,
+    obtener_cita_con_paciente_por_id,
+    obtener_configuracion_gmail,
 )
 
 
@@ -64,6 +73,14 @@ MESES = [
     "Diciembre",
 ]
 
+#Calendar ID: obtener de configuración de Gmail
+def get_google_calendar_id() -> str:
+    try:
+        cfg_g = obtener_configuracion_gmail()
+        return (cfg_g.get("google_calendar_id") or "").strip()
+    except Exception:
+        return ""
+
 
 def build_agenda_view(page: ft.Page) -> ft.Control:
     """
@@ -88,6 +105,10 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
     )
     mini_calendario_col = ft.Column(spacing=5)
     texto_semana = ft.Text(weight="bold")
+    btn_sync_semana = ft.ElevatedButton(
+        "Sincronizar semana",
+        icon=ft.Icons.SYNC,
+    )
 
     panel_expandido = {"value": True}
 
@@ -857,6 +878,32 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         fecha_str = fecha_obj.strftime("%Y-%m-%d")
         hora_inicio_str = f"{dd_hora.value}:{dd_min.value}"
         hora_fin_str = f"{dd_hora_fin.value}:{dd_min_fin.value}"
+        
+        # --- Validar rango inicio/fin ---
+        try:
+            h_ini = int(dd_hora.value)
+            m_ini = int(dd_min.value)
+            h_fin = int(dd_hora_fin.value)
+            m_fin = int(dd_min_fin.value)
+        except Exception:
+            mensaje_error.value = "Debes seleccionar hora y minuto de inicio y fin."
+            mensaje_error.visible = True
+            if mensaje_error.page is not None:
+                mensaje_error.update()
+            return
+
+        dt_ini = datetime(fecha_obj.year, fecha_obj.month, fecha_obj.day, h_ini, m_ini)
+        dt_fin = datetime(fecha_obj.year, fecha_obj.month, fecha_obj.day, h_fin, m_fin)
+
+        if dt_fin <= dt_ini:
+            mensaje_error.value = "La hora de fin debe ser mayor que la de inicio."
+            mensaje_error.visible = True
+            if mensaje_error.page is not None:
+                mensaje_error.update()
+            return
+
+        ini_str = dt_ini.strftime("%Y-%m-%d %H:%M")
+        fin_str = dt_fin.strftime("%Y-%m-%d %H:%M")
 
         srv = reserva["servicio"]
         # Modalidad para BD: particular | convenio
@@ -895,7 +942,8 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
         datos_cita = {
             "documento_paciente": reserva["paciente"]["documento"],
-            "fecha_hora": f"{fecha_str} {hora_inicio_str}",
+            "fecha_hora": ini_str,
+            "fecha_hora_fin": fin_str,
             "modalidad": modalidad,
             "canal": canal,
             "motivo": motivo,
@@ -905,20 +953,22 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             "precio": precio_final,
         }
 
-        # Validar que no exista otra cita en la misma fecha y hora
+        # Validar solape con otras citas
         cita_id_actual = cita_editando_id["value"]
-        if existe_cita_en_fecha(datos_cita["fecha_hora"], cita_id_actual):
+
+        # Validar solape con otras citas
+        if existe_cita_en_rango(ini_str, fin_str, cita_id_actual):
             mensaje_error.value = (
-                "Ya existe una cita en esa fecha y hora. "
-                "Por favor selecciona otra hora."
+                "Ya existe una cita que se solapa con este horario. "
+                "Por favor selecciona otro rango."
             )
             mensaje_error.visible = True
             if mensaje_error.page is not None:
                 mensaje_error.update()
             return
 
-        # Validar bloqueo de horario
-        if existe_bloqueo_en_fecha(datos_cita["fecha_hora"], None):
+        # Validar solape con bloqueos
+        if existe_bloqueo_en_rango(ini_str, fin_str, None):
             mensaje_error.value = (
                 "Este horario está bloqueado en la agenda. "
                 "Elimina o mueve el bloqueo antes de agendar un paciente."
@@ -936,6 +986,20 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             cita_id = cita_editando_id["value"]
             actualizar_cita(cita_id, datos_cita)
             
+        # Sincronizar con Google Calendar
+        try:
+            calendar_id = get_google_calendar_id()
+            if calendar_id:
+                row = obtener_cita_con_paciente_por_id(cita_id)
+                if row:
+                    sync_cita_to_google(dict(row), calendar_id)
+                else:
+                    cita_sync = dict(datos_cita)
+                    cita_sync["id"] = cita_id
+                    sync_cita_to_google(cita_sync, calendar_id)
+        except Exception as e:
+            print("⚠️ Error sync Google (cita):", e)
+
         # ----------------- CONSUMO DE PAQUETE (SOLO PRESENCIAL) -----------------
         try:
             canal_nuevo = canal
@@ -1084,6 +1148,14 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
                     devolver_cita_paquete_arriendo(cita_id)
             except Exception as ex:
                 print(f"[WARN] No se pudo devolver cita del paquete: {ex}")
+                
+            # Sincronizar eliminación en Google Calendar
+            try:
+                calendar_id = get_google_calendar_id()
+                if calendar_id:
+                    delete_cita_from_google(cita_id, calendar_id)
+            except Exception as e:
+                print("⚠️ Error delete Google (cita):", e)
                 
             eliminar_cita(cita_id)
 
@@ -1430,13 +1502,25 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
                 "fecha_hora_inicio": ini_str,
                 "fecha_hora_fin": fin_str,
             }
-
+            # Crear o actualizar en BD
             if bloqueo_editando_id["value"] is None:
-                crear_bloqueo(payload)
+                bloqueo_id = crear_bloqueo(payload)  # 👈 IMPORTANTE: capturar ID
+                bloqueo_editando_id["value"] = bloqueo_id  # opcional pero útil
                 msg_snack = "Bloqueo creado."
             else:
-                actualizar_bloqueo(bloqueo_editando_id["value"], payload)
+                bloqueo_id = bloqueo_editando_id["value"]
+                actualizar_bloqueo(bloqueo_id, payload)
                 msg_snack = "Bloqueo actualizado."
+
+            # ---- Sync Google (best effort, no rompe flujo local) ----
+            try:
+                bloqueo_sync = dict(payload)
+                bloqueo_sync["id"] = bloqueo_id
+                calendar_id = get_google_calendar_id()
+                if calendar_id:
+                    sync_bloqueo_to_google(bloqueo_sync, calendar_id)
+            except Exception as ex:
+                print("⚠️ Error sync Google (bloqueo):", ex)
 
             dialogo_bloqueo.open = False
             page.update()
@@ -1462,7 +1546,17 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
                 page.update()
 
             def confirmar(ev=None):
-                eliminar_bloqueo(bloqueo_editando_id["value"])
+                bloqueo_id = bloqueo_editando_id["value"]
+
+                # ---- Delete Google (best effort) ----
+                try:
+                    calendar_id = get_google_calendar_id()
+                    if calendar_id:
+                        delete_bloqueo_from_google(bloqueo_id, calendar_id)
+                except Exception as ex:
+                    print("⚠️ Error delete Google (bloqueo):", ex)
+
+                eliminar_bloqueo(bloqueo_id)
                 dialog_confirm.open = False
                 page.update()
 
@@ -1549,55 +1643,6 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             ft.ElevatedButton("Guardar reserva", on_click=guardar_reserva),
         ],
     )
-
-    # ----------------- CLICK EN SLOT (NUEVA CITA) -------------------
-
-    # def preparar_reserva_para_slot(dia: date, minuto: int):
-    #     """Configura el estado de la reserva para el slot indicado, pero no abre el diálogo."""
-    #     h = minuto // 60
-    #     mm = minuto % 60
-
-    #     cita_editando_id["value"] = None
-
-# _actualizar_boton_whatsapp()
-
-    #     reserva["fecha"] = dia
-    #     reserva["hora_inicio"] = (h, mm)
-    #     reserva["hora_fin"] = (h + 1, mm)
-
-    #     txt_fecha.value = dia.strftime("%Y-%m-%d")
-
-    #     dd_hora.options = [ft.dropdown.Option(f"{x:02d}") for x in range(0, 24)]
-    #     dd_min.options = [ft.dropdown.Option(f"{x:02d}") for x in range(0, 60, 5)]
-    #     dd_hora_fin.options = [ft.dropdown.Option(f"{x:02d}") for x in range(0, 24)]
-    #     dd_min_fin.options = [ft.dropdown.Option(f"{x:02d}") for x in range(0, 60, 5)]
-
-    #     dd_hora.value = f"{h:02d}"
-    #     dd_min.value = f"{mm:02d}"
-    #     dd_hora_fin.value = f"{h+1:02d}"
-    #     dd_min_fin.value = f"{mm:02d}"
-
-    #     reserva["paciente"] = None
-    #     ficha_paciente.visible = False
-    #     ficha_paciente.controls.clear()
-
-    #     titulo_reserva.value = "Nueva reserva"
-
-    #     txt_buscar_paciente.value = ""
-    #     resultados_pacientes.controls.clear()
-
-    #     reserva["servicio"] = None
-    #     dd_servicios.value = None
-    #     txt_precio.value = ""
-    #     txt_notas.value = ""
-    #     txt_empresa_convenio.value = ""
-    #     txt_empresa_convenio.visible = False
-
-    #     dd_estado.set_value("reservado")
-    #     chk_pagado.value = False
-
-    #     mensaje_error.value = ""
-    #     mensaje_error.visible = False
 
     def abrir_reserva_nueva_desde_slot(e=None):
         dia = slot_actual["fecha"]
@@ -1900,14 +1945,23 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         cita_editando_id["value"] = cita_row["id"]
         cita_editando_row["value"] = cita_row
 
-        dt = datetime.strptime(cita_row["fecha_hora"][:16], "%Y-%m-%d %H:%M")
-        dia = dt.date()
-        h = dt.hour
-        mm = dt.minute
+        dt_ini = datetime.strptime(cita_row["fecha_hora"][:16], "%Y-%m-%d %H:%M")
+
+        # Si por alguna razón no viene fecha_hora_fin, fallback a +1 slot
+        fh_fin = (cita_row.get("fecha_hora_fin") or "").strip()
+        if fh_fin:
+            try:
+                dt_fin = datetime.strptime(fh_fin[:16], "%Y-%m-%d %H:%M")
+            except Exception:
+                dt_fin = dt_ini + timedelta(minutes=int(slot_minutes.get("value") or 60))
+        else:
+            dt_fin = dt_ini + timedelta(minutes=int(slot_minutes.get("value") or 60))
+
+        dia = dt_ini.date()
 
         reserva["fecha"] = dia
-        reserva["hora_inicio"] = (h, mm)
-        reserva["hora_fin"] = (h + 1, mm)
+        reserva["hora_inicio"] = (dt_ini.hour, dt_ini.minute)
+        reserva["hora_fin"] = (dt_fin.hour, dt_fin.minute)
 
         txt_fecha.value = dia.strftime("%Y-%m-%d")
 
@@ -1916,10 +1970,11 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         dd_hora_fin.options = [ft.dropdown.Option(f"{x:02d}") for x in range(0, 24)]
         dd_min_fin.options = [ft.dropdown.Option(f"{x:02d}") for x in range(0, 60, 5)]
 
-        dd_hora.value = f"{h:02d}"
-        dd_min.value = f"{mm:02d}"
-        dd_hora_fin.value = f"{h+1:02d}"
-        dd_min_fin.value = f"{mm:02d}"
+        dd_hora.value = f"{dt_ini.hour:02d}"
+        dd_min.value = f"{dt_ini.minute:02d}"
+        dd_hora_fin.value = f"{dt_fin.hour:02d}"
+        dd_min_fin.value = f"{dt_fin.minute:02d}"
+
 
         # Paciente (viene ya junto en el SELECT)
         pac = {
@@ -2174,8 +2229,6 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             motivo = bloq.get("motivo", "")
             tooltip_bloq = f"Bloqueo de horario\n{rango_txt}\n{motivo}"
 
-            tooltip_bloq = f"Bloqueo de horario\n{hora_txt}\n{motivo}"
-
             bloque_bloq = ft.Container(
             content=ft.Column(
                 [
@@ -2308,6 +2361,71 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         ),
         on_click=cell_on_click,
     )
+        
+        
+    # ----------------- SINCRONIZACIÓN GOOGLE CALENDAR -------------------   
+    def sync_google_semana_actual(e=None):
+        calendar_id = get_google_calendar_id()
+        if not calendar_id:
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text("No hay Google Calendar ID configurado. Ve a Configuración."),
+                bgcolor=ft.Colors.GREY_300,
+            )
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        # UI feedback
+        btn_sync_semana.disabled = True
+        btn_sync_semana.text = "Sincronizando..."
+        page.update()
+
+        ok_citas = ok_bloq = fail = 0
+
+        try:
+            dias = obtener_dias_semana(semana_lunes["value"])
+            inicio_dt = datetime.combine(dias[0], datetime.min.time())
+            fin_dt = datetime.combine(dias[-1], datetime.max.time())
+
+            citas = listar_citas_con_paciente_rango(
+                inicio_dt.strftime("%Y-%m-%d %H:%M"),
+                fin_dt.strftime("%Y-%m-%d %H:%M"),
+            )
+
+            bloqueos = listar_bloqueos_rango(
+                inicio_dt.strftime("%Y-%m-%d %H:%M"),
+                fin_dt.strftime("%Y-%m-%d %H:%M"),
+            )
+
+            for r in citas:
+                try:
+                    sync_cita_to_google(dict(r), calendar_id)
+                    ok_citas += 1
+                except Exception as ex:
+                    fail += 1
+                    print("⚠️ Error sync cita:", ex)
+
+            for b in bloqueos:
+                try:
+                    sync_bloqueo_to_google(dict(b), calendar_id)
+                    ok_bloq += 1
+                except Exception as ex:
+                    fail += 1
+                    print("⚠️ Error sync bloqueo:", ex)
+
+        finally:
+            btn_sync_semana.disabled = False
+            btn_sync_semana.text = "Sincronizar semana"
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text(
+                    f"Sincronización lista · Citas: {ok_citas} · Bloqueos: {ok_bloq} · Fallos: {fail}"
+                ),
+                bgcolor=ft.Colors.GREEN_300 if fail == 0 else ft.Colors.AMBER_300,
+            )
+            page.snack_bar.open = True
+            page.update()
+        
+    btn_sync_semana.on_click = sync_google_semana_actual
 
     # ----------------- AGENDA SEMANAL -------------------
     
@@ -2362,15 +2480,31 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
         citas_por_celda: dict[tuple[date, int], list[dict]] = {}
         for c in citas_rows:
-            dt = datetime.strptime(c["fecha_hora"][:16], "%Y-%m-%d %H:%M")
-            fecha_d = dt.date()
-            total_min = dt.hour * 60 + dt.minute
-            if total_min < start_min or total_min > end_min:
+            ini_str = (c.get("fecha_hora") or "")[:16]
+            fin_str = (c.get("fecha_hora_fin") or "")[:16]
+
+            try:
+                dt_ini = datetime.strptime(ini_str, "%Y-%m-%d %H:%M")
+                if fin_str:
+                    dt_fin = datetime.strptime(fin_str, "%Y-%m-%d %H:%M")
+                else:
+                    dt_fin = dt_ini + timedelta(minutes=int(slot_minutes.get("value") or 60))
+            except Exception:
                 continue
-            slot_idx = (total_min - start_min) // intervalo
-            slot_min = start_min + slot_idx * intervalo
-            key = (fecha_d, slot_min)
-            citas_por_celda.setdefault(key, []).append(c)
+
+            # Iterar slots cubiertos por la cita (fin exclusivo)
+            dt_cur = dt_ini
+            while dt_cur < dt_fin:
+                fecha_d = dt_cur.date()
+                total_min = dt_cur.hour * 60 + dt_cur.minute
+
+                if start_min <= total_min <= end_min:
+                    slot_idx = (total_min - start_min) // intervalo
+                    slot_min = start_min + slot_idx * intervalo
+                    key = (fecha_d, slot_min)
+                    citas_por_celda.setdefault(key, []).append(c)
+
+                dt_cur += timedelta(minutes=intervalo)
 
         filas = []
 
@@ -2638,6 +2772,7 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             ft.TextButton("Hoy", on_click=semana_hoy),
             ft.Text("Semana:", weight="bold"),
             texto_semana,
+            btn_sync_semana, # botón de sincronización Google Calendar
         ],
         alignment=ft.MainAxisAlignment.START,
         spacing=5,

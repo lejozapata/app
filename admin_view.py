@@ -245,6 +245,16 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         label="Habilitar envío de correos (Gmail)",
         value=bool(cfg_gmail.get("habilitado")),
     )
+    
+    # ------- Google Calendar ID --------
+    
+    txt_google_calendar_id = ft.TextField(
+        label="Google Calendar ID",
+        value=(cfg_gmail.get("google_calendar_id") or ""),
+        width=720,  # o 350 si lo quieres en una fila
+        helper_text="Pega el ID del calendario (termina en @group.calendar.google.com).",
+    )
+
 
     # -------- CIE-11 (ICD-11) --------
 
@@ -674,6 +684,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             "gmail_user": (txt_gmail_user.value or "").strip() or None,
             "gmail_app_password": (txt_gmail_app_password.value or "").strip() or None,
             "habilitado": bool(sw_habilitar_email.value),
+            "google_calendar_id": (txt_google_calendar_id.value or "").strip(),
         }
         guardar_configuracion_gmail(cfg_gmail_guardar)
 
@@ -718,6 +729,16 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             ),
             ft.Row([txt_gmail_user, txt_gmail_app_password], spacing=10),
             ft.Row([sw_habilitar_email, btn_abrir_sitio_gmail], spacing=10),
+            ft.Divider(),
+            
+            ############# Google Calendar #############
+            ft.Text("Integración Google Calendar", weight="bold"),
+            ft.Text(
+                "Configura el ID del calendario donde se sincronizarán citas y bloqueos.",
+                size=12,
+                color=ft.Colors.GREY_700,
+            ),
+            txt_google_calendar_id,
 
             ft.Divider(),
             
@@ -739,7 +760,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             ft.Row([sw_habilitar_cie11, btn_API_CIE11], spacing=10),
             
             ft.Divider(),
-
+            ############# Información de la aplicación/versión ############
             ft.Text("Información de la aplicación", weight="bold"),
 
             ft.Row(

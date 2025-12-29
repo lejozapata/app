@@ -117,6 +117,7 @@ def init_db() -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             documento_paciente TEXT NOT NULL,
             fecha_hora TEXT NOT NULL,
+            fecha_hora_fin TEXT NOT NULL,    
             modalidad TEXT NOT NULL CHECK (modalidad IN ('particular', 'convenio')),
             canal TEXT NOT NULL CHECK (canal IN ('presencial', 'virtual')),
             motivo TEXT,
@@ -196,8 +197,6 @@ def init_db() -> None:
         """
     )
 
-        
-
     # Tabla de configuración de GMAIL (siempre un solo registro id=1)
     cur.execute(
         """
@@ -209,6 +208,12 @@ def init_db() -> None:
         );
         """
     )
+    
+    # Migraciones seguras para configuracion_gmail
+    cur.execute("PRAGMA table_info(configuracion_gmail);")
+    cols = [row[1] for row in cur.fetchall()]
+    if "google_calendar_id" not in cols:
+        cur.execute("ALTER TABLE configuracion_gmail ADD COLUMN google_calendar_id TEXT;")
     
     # -------------------- Configuración CIE-11 (ICD-11) --------------------
     cur.execute(
@@ -499,8 +504,48 @@ def init_db() -> None:
         ON historia_diagnosticos (historia_id, sistema, codigo);
     """)
     
+    # Tabla de sincronización con Google Calendar para citas
+    
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS google_calendar_sync (
+        cita_id INTEGER PRIMARY KEY,
+        calendar_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        last_hash TEXT,
+        synced_at TEXT DEFAULT (datetime('now','localtime')),
+        FOREIGN KEY(cita_id) REFERENCES citas(id) ON DELETE CASCADE
+        );
+        """
+    )
+    
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS ix_google_calendar_sync_event
+        ON google_calendar_sync(event_id);
+    """)
+    
+    # Tabla de sincronización con Google Calendar para bloqueos de agenda
+    cur.execute(
+    """
+    CREATE TABLE IF NOT EXISTS google_calendar_sync_bloqueos (
+        bloqueo_id INTEGER PRIMARY KEY,
+        calendar_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        last_hash TEXT,
+        synced_at TEXT DEFAULT (datetime('now','localtime')),
+        FOREIGN KEY (bloqueo_id)
+            REFERENCES bloqueos_agenda(id)
+            ON DELETE CASCADE
+    );
+    """
+)
+    
     conn.commit()
     conn.close()
+    
+    
+    
+            
 
 #######################FIN TABLAS ########################
 
@@ -985,9 +1030,6 @@ def eliminar_sesion_clinica(sesion_id: int) -> None:
     conn.close()
 
 
-
-
-
 # ===================== C I T A S =====================
 
 def crear_cita(cita: Dict[str, Any]) -> int:
@@ -996,19 +1038,24 @@ def crear_cita(cita: Dict[str, Any]) -> int:
 
     Espera un diccionario con llaves:
       - documento_paciente (str)
-      - fecha_hora (str, formato 'YYYY-MM-DD HH:MM')
-      - modalidad (str: 'virtual' | 'presencial' | 'convenio_empresarial')
+      - fecha_hora (str, formato 'YYYY-MM-DD HH:MM')        -> inicio
+      - fecha_hora_fin (str, formato 'YYYY-MM-DD HH:MM')    -> fin
+      - modalidad (str: 'particular' | 'convenio')
+      - canal (str: 'presencial' | 'virtual')  (opcional -> default 'presencial')
       - motivo (str, opcional)
       - notas (str, opcional)
-      - estado (str: 'reservado', 'confirmado', 'no_asistio', etc.)
-      - pagado (int: 0 o 1, opcional -> default 0)
+      - estado (str: 'reservado', 'confirmado', etc.)
+      - precio (float, opcional -> default 0)
+      - pagado (int 0/1, opcional -> default 0)
+
     Devuelve el ID autogenerado de la cita.
     """
     conn = get_connection()
     cur = conn.cursor()
 
     datos = dict(cita)
-    # Compatibilidad: si no viene pagado en el dict, se asume 0 (no pagado)
+
+    # Compatibilidad: si no viene pagado, se asume 0
     if "pagado" not in datos:
         datos["pagado"] = 0
 
@@ -1016,11 +1063,16 @@ def crear_cita(cita: Dict[str, Any]) -> int:
     if "canal" not in datos or not str(datos.get("canal") or "").strip():
         datos["canal"] = "presencial"
 
+    # Compatibilidad: si no viene precio, se asume 0
+    if "precio" not in datos:
+        datos["precio"] = 0
+
     cur.execute(
         """
         INSERT INTO citas (
             documento_paciente,
             fecha_hora,
+            fecha_hora_fin,
             modalidad,
             canal,
             motivo,
@@ -1031,6 +1083,7 @@ def crear_cita(cita: Dict[str, Any]) -> int:
         ) VALUES (
             :documento_paciente,
             :fecha_hora,
+            :fecha_hora_fin,
             :modalidad,
             :canal,
             :motivo,
@@ -1051,23 +1104,27 @@ def crear_cita(cita: Dict[str, Any]) -> int:
 
 def listar_citas_rango(fecha_inicio: str, fecha_fin: str) -> List[sqlite3.Row]:
     """
-    Lista las citas entre dos fechas (inclusive), ordenadas por fecha_hora.
+    Lista las citas que SE SOLAPAN con el rango [fecha_inicio, fecha_fin),
+    ordenadas por fecha_hora (inicio).
 
-    fecha_inicio y fecha_fin deben estar en formato 'YYYY-MM-DD HH:MM'
-    o 'YYYY-MM-DD HH:MM:SS' para que datetime() de SQLite las compare bien.
+    Regla de solape:
+      (inicio < fin_rango) AND (fin > inicio_rango)
+
+    Formato: 'YYYY-MM-DD HH:MM' (o con segundos)
     """
     conn = get_connection()
+    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
     cur.execute(
         """
         SELECT *
         FROM citas
-        WHERE datetime(fecha_hora) >= datetime(?)
-          AND datetime(fecha_hora) <= datetime(?)
+        WHERE datetime(fecha_hora) < datetime(?)
+          AND datetime(fecha_hora_fin) > datetime(?)
         ORDER BY datetime(fecha_hora) ASC;
         """,
-        (fecha_inicio, fecha_fin),
+        (fecha_fin, fecha_inicio),
     )
 
     filas = cur.fetchall()
@@ -1077,9 +1134,12 @@ def listar_citas_rango(fecha_inicio: str, fecha_fin: str) -> List[sqlite3.Row]:
 
 def listar_citas_con_paciente_rango(fecha_inicio: str, fecha_fin: str) -> List[sqlite3.Row]:
     """
-    Lista citas entre dos fechas incluyendo datos básicos del paciente.
+    Lista citas que SE SOLAPAN con el rango [fecha_inicio, fecha_fin),
+    incluyendo datos del paciente.
+
     Devuelve columnas de 'citas' +:
       - nombre_completo
+      - indicativo_pais
       - telefono
       - email
     """
@@ -1098,22 +1158,24 @@ def listar_citas_con_paciente_rango(fecha_inicio: str, fecha_fin: str) -> List[s
         FROM citas c
         JOIN pacientes p
             ON p.documento = c.documento_paciente
-        WHERE datetime(c.fecha_hora) >= datetime(?)
-          AND datetime(c.fecha_hora) <= datetime(?)
+        WHERE datetime(c.fecha_hora) < datetime(?)
+          AND datetime(c.fecha_hora_fin) > datetime(?)
         ORDER BY datetime(c.fecha_hora) ASC;
         """,
-        (fecha_inicio, fecha_fin),
+        (fecha_fin, fecha_inicio),
     )
 
     filas = cur.fetchall()
     conn.close()
     return filas
 
+
 def existe_cita_en_fecha(fecha_hora: str, cita_id_excluir: Optional[int] = None) -> bool:
     """
-    Devuelve True si ya hay una cita exactamente en fecha_hora.
-    Si cita_id_excluir no es None, se excluye ese id de la verificación
-    (útil cuando estás editando una cita).
+    (Opcional) Devuelve True si ya hay una cita que INICIA exactamente en fecha_hora.
+    Útil si quieres bloquear duplicados exactos de inicio, pero NO reemplaza la validación por solape.
+
+    Si cita_id_excluir no es None, se excluye ese id (útil al editar).
     """
     conn = get_connection()
     cur = conn.cursor()
@@ -1138,16 +1200,18 @@ def actualizar_cita(cita_id: int, campos: Dict[str, Any]) -> None:
     """
     Actualiza una cita existente.
 
-    'campos' es un diccionario con las columnas a actualizar, por ejemplo:
-      {
-        "fecha_hora": "2025-12-02 08:00",
-        "modalidad": "presencial",
-        "motivo": "...",
-        "notas": "...",
-        "estado": "confirmado",
-        "pagado": 1,
-        "documento_paciente": "1152..."
-      }
+    'campos' es un diccionario con las columnas a actualizar.
+    Puede incluir:
+      - fecha_hora
+      - fecha_hora_fin
+      - modalidad
+      - canal
+      - motivo
+      - notas
+      - estado
+      - precio
+      - pagado
+      - documento_paciente
     """
     if not campos:
         return
@@ -1169,9 +1233,14 @@ def actualizar_cita(cita_id: int, campos: Dict[str, Any]) -> None:
     conn.commit()
     conn.close()
 
+
 def existe_cita_en_rango(fecha_inicio: str, fecha_fin: str, cita_id_excluir: int | None = None) -> bool:
     """
-    Retorna True si existe al menos una cita con fecha_hora dentro del rango [fecha_inicio, fecha_fin).
+    Retorna True si existe al menos una cita que SE SOLAPA con el rango [fecha_inicio, fecha_fin).
+
+    Regla de solape:
+      (cita_inicio < fin_rango) AND (cita_fin > inicio_rango)
+
     Formato: 'YYYY-MM-DD HH:MM'
     """
     conn = get_connection()
@@ -1182,21 +1251,21 @@ def existe_cita_en_rango(fecha_inicio: str, fecha_fin: str, cita_id_excluir: int
             """
             SELECT COUNT(*)
             FROM citas
-            WHERE datetime(fecha_hora) >= datetime(?)
-              AND datetime(fecha_hora) < datetime(?);
+            WHERE datetime(fecha_hora) < datetime(?)
+              AND datetime(fecha_hora_fin) > datetime(?);
             """,
-            (fecha_inicio, fecha_fin),
+            (fecha_fin, fecha_inicio),
         )
     else:
         cur.execute(
             """
             SELECT COUNT(*)
             FROM citas
-            WHERE datetime(fecha_hora) >= datetime(?)
-              AND datetime(fecha_hora) < datetime(?)
+            WHERE datetime(fecha_hora) < datetime(?)
+              AND datetime(fecha_hora_fin) > datetime(?)
               AND id != ?;
             """,
-            (fecha_inicio, fecha_fin, cita_id_excluir),
+            (fecha_fin, fecha_inicio, cita_id_excluir),
         )
 
     count = cur.fetchone()[0]
@@ -1213,6 +1282,7 @@ def eliminar_cita(cita_id: int) -> None:
 
     conn.commit()
     conn.close()
+
 
 # ------------ CONFIGURACIÓN PROFESIONAL -------------
 
@@ -1500,7 +1570,7 @@ def existe_bloqueo_en_fecha(fecha_hora: str, bloqueo_id_excluir: Optional[int] =
     dt_fin = dt + timedelta(minutes=60)
     return existe_bloqueo_en_rango(dt.strftime("%Y-%m-%d %H:%M"), dt_fin.strftime("%Y-%m-%d %H:%M"), bloqueo_id_excluir)
 
-
+#================ S E R V I C I O S ====================
 
 def crear_servicio(nombre: str, modalidad: str, precio: float, empresa: str | None = None, activo: bool = True) -> int:
     """
@@ -3325,6 +3395,7 @@ def obtener_configuracion_gmail() -> dict:
         "gmail_app_password": row["gmail_app_password"],  # OJO: cifrado (enc::...) o plano legacy
         "habilitado": bool(row["habilitado"]),
         "tiene_password": bool(row["gmail_app_password"]),
+        "google_calendar_id": row["google_calendar_id"] if "google_calendar_id" in row.keys() else None,
     }
 
     conn.close()
@@ -3348,6 +3419,7 @@ def guardar_configuracion_gmail(cfg: dict) -> None:
 
     gmail_user = (cfg.get("gmail_user") or "").strip() or None
     new_password = (cfg.get("gmail_app_password") or "").strip() or None
+    google_calendar_id = (cfg.get("google_calendar_id") or "").strip() or None
 
     # Si el usuario no escribió una nueva, preservamos la existente
     if not new_password and actual is not None:
@@ -3367,10 +3439,10 @@ def guardar_configuracion_gmail(cfg: dict) -> None:
     if actual is None:
         cur.execute(
             """
-            INSERT INTO configuracion_gmail (id, gmail_user, gmail_app_password, habilitado)
-            VALUES (1, ?, ?, ?);
+            INSERT INTO configuracion_gmail (id, gmail_user, gmail_app_password, habilitado, google_calendar_id)
+            VALUES (1, ?, ?, ?, ?);
             """,
-            (gmail_user, new_password, habilitado),
+            (gmail_user, new_password, habilitado, google_calendar_id),
         )
     else:
         cur.execute(
@@ -3378,10 +3450,11 @@ def guardar_configuracion_gmail(cfg: dict) -> None:
             UPDATE configuracion_gmail
             SET gmail_user = ?,
                 gmail_app_password = ?,
-                habilitado = ?
+                habilitado = ?,
+                google_calendar_id = ?
             WHERE id = 1;
             """,
-            (gmail_user, new_password, habilitado),
+            (gmail_user, new_password, habilitado, google_calendar_id),
         )
 
     conn.commit()
@@ -3390,6 +3463,7 @@ def guardar_configuracion_gmail(cfg: dict) -> None:
     
 from .crypto_utils import encrypt_str, decrypt_str  # ajusta import si aplica
 
+#------------ CONFIGURACIÓN CIE-11 --------------------
 def obtener_configuracion_cie11() -> dict:
     conn = get_connection()
     cur = conn.cursor()
@@ -3486,6 +3560,30 @@ def obtener_cita_con_paciente(cita_id: int):
         """,
         (int(cita_id),),
     )
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+def obtener_cita_con_paciente_por_id(cita_id: int) -> sqlite3.Row | None:
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT
+            c.*,
+            p.nombre_completo,
+            p.indicativo_pais,
+            p.telefono,
+            p.email
+        FROM citas c
+        JOIN pacientes p ON p.documento = c.documento_paciente
+        WHERE c.id = ?;
+        """,
+        (cita_id,),
+    )
+
     row = cur.fetchone()
     conn.close()
     return row
