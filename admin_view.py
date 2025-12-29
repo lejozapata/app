@@ -254,6 +254,11 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         width=720,  # o 350 si lo quieres en una fila
         helper_text="Pega el ID del calendario (termina en @group.calendar.google.com).",
     )
+    
+    sw_habilitar_google_calendar = ft.Switch(
+        label="Habilitar sincronización con Google Calendar",
+        value=bool(cfg_gmail.get("google_calendar_habilitado")),
+    )
 
 
     # -------- CIE-11 (ICD-11) --------
@@ -685,6 +690,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             "gmail_app_password": (txt_gmail_app_password.value or "").strip() or None,
             "habilitado": bool(sw_habilitar_email.value),
             "google_calendar_id": (txt_google_calendar_id.value or "").strip(),
+            "google_calendar_habilitado": bool(sw_habilitar_google_calendar.value),
         }
         guardar_configuracion_gmail(cfg_gmail_guardar)
 
@@ -739,6 +745,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
                 color=ft.Colors.GREY_700,
             ),
             txt_google_calendar_id,
+            ft.Row([sw_habilitar_google_calendar], spacing=10),
 
             ft.Divider(),
             

@@ -1,7 +1,9 @@
 import os
 import smtplib
 import threading
+import asyncio
 from email.message import EmailMessage
+from datetime import time
 from .notificaciones_email import (
     enviar_correo_cita,
     enviar_correo_cancelacion,
@@ -17,6 +19,10 @@ from .google_calendar import (
     delete_cita_from_google,
     sync_bloqueo_to_google,
     delete_bloqueo_from_google,
+    list_events_range,
+    delete_event_by_id,
+    parse_meta,
+    
 )
 
 from .db import (
@@ -41,6 +47,8 @@ from .db import (
     obtener_cita_con_paciente,
     obtener_cita_con_paciente_por_id,
     obtener_configuracion_gmail,
+    existe_bloqueo_por_id,
+    existe_cita_por_id,
 )
 
 
@@ -75,11 +83,32 @@ MESES = [
 
 #Calendar ID: obtener de configuración de Gmail
 def get_google_calendar_id() -> str:
+    """
+    Devuelve el Calendar ID SOLO si la integración está habilitada.
+    Si el switch está apagado o no hay ID, retorna "" para que el resto del código no intente sincronizar.
+    """
     try:
         cfg_g = obtener_configuracion_gmail()
-        return (cfg_g.get("google_calendar_id") or "").strip()
+        habilitado = bool(cfg_g.get("google_calendar_habilitado"))
+        cal_id = (cfg_g.get("google_calendar_id") or "").strip()
+        return cal_id if (habilitado and cal_id) else ""
     except Exception:
         return ""
+    
+def is_google_calendar_enabled() -> bool:
+    """
+    Retorna True solo si:
+    - el switch está habilitado
+    - existe un calendar_id configurado
+    """
+    try:
+        cfg = obtener_configuracion_gmail()
+        return bool(
+            cfg.get("google_calendar_habilitado") and
+            cfg.get("google_calendar_id")
+        )
+    except Exception:
+        return False
 
 
 def build_agenda_view(page: ft.Page) -> ft.Control:
@@ -105,10 +134,12 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
     )
     mini_calendario_col = ft.Column(spacing=5)
     texto_semana = ft.Text(weight="bold")
-    btn_sync_semana = ft.ElevatedButton(
-        "Sincronizar semana",
+    btn_sync_semana = ft.IconButton(
+        tooltip="Sincronizar semana",
         icon=ft.Icons.SYNC,
     )
+    
+    lbl_sync_status = ft.Text("", size=12, color=ft.Colors.GREY_700)
 
     panel_expandido = {"value": True}
 
@@ -374,6 +405,7 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             msg = "\n".join(msg_lines)
             url = f"https://wa.me/{wa_num}?text={urllib.parse.quote(msg)}"
             page.launch_url(url)
+            
 
 
 
@@ -987,9 +1019,12 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             actualizar_cita(cita_id, datos_cita)
             
         # Sincronizar con Google Calendar
-        try:
-            calendar_id = get_google_calendar_id()
-            if calendar_id:
+        def tarea_sync_google_cita():
+            try:
+                calendar_id = get_google_calendar_id()  # luego lo cambiamos por el "enabled + id"
+                if not calendar_id:
+                    return
+
                 row = obtener_cita_con_paciente_por_id(cita_id)
                 if row:
                     sync_cita_to_google(dict(row), calendar_id)
@@ -997,8 +1032,11 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
                     cita_sync = dict(datos_cita)
                     cita_sync["id"] = cita_id
                     sync_cita_to_google(cita_sync, calendar_id)
-        except Exception as e:
-            print("⚠️ Error sync Google (cita):", e)
+
+            except Exception as ex:
+                print("⚠️ Error sync Google (cita):", ex)
+
+        threading.Thread(target=tarea_sync_google_cita, daemon=True).start()
 
         # ----------------- CONSUMO DE PAQUETE (SOLO PRESENCIAL) -----------------
         try:
@@ -1153,9 +1191,15 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             try:
                 calendar_id = get_google_calendar_id()
                 if calendar_id:
-                    delete_cita_from_google(cita_id, calendar_id)
+                    def tarea_delete_google():
+                        try:
+                            delete_cita_from_google(cita_id, calendar_id)
+                        except Exception as ex:
+                            print("⚠️ Error delete Google (cita):", ex)
+
+                    threading.Thread(target=tarea_delete_google, daemon=True).start()
             except Exception as e:
-                print("⚠️ Error delete Google (cita):", e)
+                print("⚠️ Error preparando delete Google (cita):", e)
                 
             eliminar_cita(cita_id)
 
@@ -1513,14 +1557,17 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
                 msg_snack = "Bloqueo actualizado."
 
             # ---- Sync Google (best effort, no rompe flujo local) ----
-            try:
-                bloqueo_sync = dict(payload)
-                bloqueo_sync["id"] = bloqueo_id
-                calendar_id = get_google_calendar_id()
-                if calendar_id:
-                    sync_bloqueo_to_google(bloqueo_sync, calendar_id)
-            except Exception as ex:
-                print("⚠️ Error sync Google (bloqueo):", ex)
+            def tarea_sync_google_bloqueo():
+                try:
+                    bloqueo_sync = dict(payload)
+                    bloqueo_sync["id"] = bloqueo_id
+                    calendar_id = get_google_calendar_id()
+                    if calendar_id:
+                        sync_bloqueo_to_google(bloqueo_sync, calendar_id)
+                except Exception as ex:
+                    print("⚠️ Error sync Google (bloqueo):", ex)
+
+            threading.Thread(target=tarea_sync_google_bloqueo, daemon=True).start()
 
             dialogo_bloqueo.open = False
             page.update()
@@ -1547,14 +1594,20 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
             def confirmar(ev=None):
                 bloqueo_id = bloqueo_editando_id["value"]
-
-                # ---- Delete Google (best effort) ----
+                
+                # --- Delete Google (best effort) ASÍNCRONO ---
                 try:
                     calendar_id = get_google_calendar_id()
                     if calendar_id:
-                        delete_bloqueo_from_google(bloqueo_id, calendar_id)
+                        def tarea_delete_google_bloqueo():
+                            try:
+                                delete_bloqueo_from_google(bloqueo_id, calendar_id)
+                            except Exception as ex:
+                                print("⚠️ Error delete Google (bloqueo):", ex)
+
+                        threading.Thread(target=tarea_delete_google_bloqueo, daemon=True).start()
                 except Exception as ex:
-                    print("⚠️ Error delete Google (bloqueo):", ex)
+                    print("⚠️ Error preparando delete Google (bloqueo):", ex)
 
                 eliminar_bloqueo(bloqueo_id)
                 dialog_confirm.open = False
@@ -2365,27 +2418,33 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         
     # ----------------- SINCRONIZACIÓN GOOGLE CALENDAR -------------------   
     def sync_google_semana_actual(e=None):
+        
         calendar_id = get_google_calendar_id()
         if not calendar_id:
-            page.snack_bar = ft.SnackBar(
-                content=ft.Text("No hay Google Calendar ID configurado. Ve a Configuración."),
-                bgcolor=ft.Colors.GREY_300,
-            )
-            page.snack_bar.open = True
+            lbl_sync_status.value = "Google Calendar deshabilitado (actívalo en Configuración)."
             page.update()
-            return
 
-        # UI feedback
+            async def _clear_label_luego():
+                await asyncio.sleep(4)
+                lbl_sync_status.value = ""
+                page.update()
+
+            page.run_task(_clear_label_luego)
+            return
+        
         btn_sync_semana.disabled = True
         btn_sync_semana.text = "Sincronizando..."
+        lbl_sync_status.value = "Sincronizando..."
         page.update()
 
         ok_citas = ok_bloq = fail = 0
-
+        citas = []
+        bloqueos = []
+        
         try:
             dias = obtener_dias_semana(semana_lunes["value"])
-            inicio_dt = datetime.combine(dias[0], datetime.min.time())
-            fin_dt = datetime.combine(dias[-1], datetime.max.time())
+            inicio_dt = datetime.combine(dias[0], time(0, 0, 0))
+            fin_dt = datetime.combine(dias[-1], time(23, 59, 59))
 
             citas = listar_citas_con_paciente_rango(
                 inicio_dt.strftime("%Y-%m-%d %H:%M"),
@@ -2397,10 +2456,20 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
                 fin_dt.strftime("%Y-%m-%d %H:%M"),
             )
 
+            # Snack “iniciando”
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"Encontré {len(citas)} citas y {len(bloqueos)} bloqueos. Sincronizando..."),
+                bgcolor=ft.Colors.GREY_300,
+                duration=2000,
+            )
+            page.snack_bar.open = True
+            page.update()
+
             for r in citas:
                 try:
                     sync_cita_to_google(dict(r), calendar_id)
                     ok_citas += 1
+                    
                 except Exception as ex:
                     fail += 1
                     print("⚠️ Error sync cita:", ex)
@@ -2412,20 +2481,89 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
                 except Exception as ex:
                     fail += 1
                     print("⚠️ Error sync bloqueo:", ex)
+                    
+        
+            # ---------------- PRUNE (limpiar eliminados en Google) ----------------
+            prune_borrados = {"n": 0}
+
+            async def _snack_prune_ok():
+                n = prune_borrados["n"]
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"🧹 Limpieza Google: borrados {n} eventos huérfanos"),
+                    bgcolor=ft.Colors.GREY_300,
+                    duration=4500,
+                )
+                page.snack_bar.open = True
+                page.update()
+
+            async def _snack_prune_err():
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text("⚠️ Error en limpieza (PRUNE) de Google Calendar"),
+                    bgcolor=ft.Colors.AMBER_300,
+                    duration=4500,
+                )
+                page.snack_bar.open = True
+                page.update()
+
+            def tarea_prune(cal_id: str, dt_ini: datetime, dt_fin: datetime):
+                try:
+                    eventos = list_events_range(cal_id, dt_ini, dt_fin)
+                    borrados = 0
+
+                    for ev in eventos:
+                        tipo, local_id = parse_meta(ev.get("description") or "")
+                        if not tipo or local_id is None:
+                            continue
+
+                        if tipo == "cita" and not existe_cita_por_id(local_id):
+                            delete_event_by_id(cal_id, ev["id"])
+                            borrados += 1
+                        elif tipo == "bloqueo" and not existe_bloqueo_por_id(local_id):
+                            delete_event_by_id(cal_id, ev["id"])
+                            borrados += 1
+
+                    if borrados:
+                        async def _ui():
+                            lbl_sync_status.value = f"🧹 Limpieza: {borrados} huérfanos"
+                            page.update()
+                            await asyncio.sleep(4)
+                            lbl_sync_status.value = ""
+                            page.update()
+
+                        page.run_task(_ui)
+
+                except Exception as ex:
+                    print("⚠️ Error PRUNE Google:", ex)
+                    page.run_task(_snack_prune_err)
+
+            page.run_thread(lambda: tarea_prune(calendar_id, inicio_dt, fin_dt))
 
         finally:
             btn_sync_semana.disabled = False
             btn_sync_semana.text = "Sincronizar semana"
+
             page.snack_bar = ft.SnackBar(
                 content=ft.Text(
-                    f"Sincronización lista · Citas: {ok_citas} · Bloqueos: {ok_bloq} · Fallos: {fail}"
+                    f"Sincronización lista ✅  Citas: {ok_citas} · Bloqueos: {ok_bloq} · Fallos: {fail}"
                 ),
                 bgcolor=ft.Colors.GREEN_300 if fail == 0 else ft.Colors.AMBER_300,
+                duration=5000,
             )
             page.snack_bar.open = True
+
+            lbl_sync_status.value = f"Listo ✅ Citas:{ok_citas} Bloq:{ok_bloq} Fallos:{fail}"
             page.update()
+
+            # ✅ auto-limpiar label a los 4s (sin defs globales)
+            async def _clear_label_luego():
+                await asyncio.sleep(4)
+                lbl_sync_status.value = ""
+                page.update()
+
+            page.run_task(_clear_label_luego)
         
     btn_sync_semana.on_click = sync_google_semana_actual
+    
 
     # ----------------- AGENDA SEMANAL -------------------
     
@@ -2772,7 +2910,7 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             ft.TextButton("Hoy", on_click=semana_hoy),
             ft.Text("Semana:", weight="bold"),
             texto_semana,
-            btn_sync_semana, # botón de sincronización Google Calendar
+            ft.Row([btn_sync_semana, lbl_sync_status], spacing=10), # botón de sincronización Google Calendar
         ],
         alignment=ft.MainAxisAlignment.START,
         spacing=5,

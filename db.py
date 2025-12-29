@@ -215,6 +215,10 @@ def init_db() -> None:
     if "google_calendar_id" not in cols:
         cur.execute("ALTER TABLE configuracion_gmail ADD COLUMN google_calendar_id TEXT;")
     
+    # ✅ NUEVO: switch calendar
+    if "google_calendar_habilitado" not in cols:
+        cur.execute("ALTER TABLE configuracion_gmail ADD COLUMN google_calendar_habilitado INTEGER NOT NULL DEFAULT 0;")
+    
     # -------------------- Configuración CIE-11 (ICD-11) --------------------
     cur.execute(
         """
@@ -3396,6 +3400,9 @@ def obtener_configuracion_gmail() -> dict:
         "habilitado": bool(row["habilitado"]),
         "tiene_password": bool(row["gmail_app_password"]),
         "google_calendar_id": row["google_calendar_id"] if "google_calendar_id" in row.keys() else None,
+        "google_calendar_habilitado": bool(row["google_calendar_habilitado"])
+        if "google_calendar_habilitado" in row.keys()
+        else False,
     }
 
     conn.close()
@@ -3420,6 +3427,8 @@ def guardar_configuracion_gmail(cfg: dict) -> None:
     gmail_user = (cfg.get("gmail_user") or "").strip() or None
     new_password = (cfg.get("gmail_app_password") or "").strip() or None
     google_calendar_id = (cfg.get("google_calendar_id") or "").strip() or None
+    google_calendar_habilitado = cfg.get("google_calendar_habilitado")
+    google_calendar_habilitado = 1 if bool(google_calendar_habilitado) else 0
 
     # Si el usuario no escribió una nueva, preservamos la existente
     if not new_password and actual is not None:
@@ -3439,8 +3448,8 @@ def guardar_configuracion_gmail(cfg: dict) -> None:
     if actual is None:
         cur.execute(
             """
-            INSERT INTO configuracion_gmail (id, gmail_user, gmail_app_password, habilitado, google_calendar_id)
-            VALUES (1, ?, ?, ?, ?);
+            INSERT INTO configuracion_gmail (id, gmail_user, gmail_app_password, habilitado, google_calendar_id, google_calendar_habilitado)
+            VALUES (1, ?, ?, ?, ?, ?);
             """,
             (gmail_user, new_password, habilitado, google_calendar_id),
         )
@@ -3451,10 +3460,11 @@ def guardar_configuracion_gmail(cfg: dict) -> None:
             SET gmail_user = ?,
                 gmail_app_password = ?,
                 habilitado = ?,
-                google_calendar_id = ?
+                google_calendar_id = ?,
+                google_calendar_habilitado = ?
             WHERE id = 1;
             """,
-            (gmail_user, new_password, habilitado, google_calendar_id),
+            (gmail_user, new_password, habilitado, google_calendar_id, google_calendar_habilitado),
         )
 
     conn.commit()
@@ -3838,6 +3848,22 @@ def top_5_pacientes_frecuentes(periodo: str) -> List[Dict[str, Any]]:
         for r in rows
     ]
 
+#----------- SYNC GOOGLE CALENDAR --------------
+def existe_cita_por_id(cita_id: int) -> bool:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM citas WHERE id = ? LIMIT 1;", (cita_id,))
+    ok = cur.fetchone() is not None
+    conn.close()
+    return ok
+
+def existe_bloqueo_por_id(bloqueo_id: int) -> bool:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM bloqueos_agenda WHERE id = ? LIMIT 1;", (bloqueo_id,))
+    ok = cur.fetchone() is not None
+    conn.close()
+    return ok
 
 
 

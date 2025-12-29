@@ -1,13 +1,63 @@
 import os
 import sqlite3
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import pytz
+import re
 
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
+
+# ================= META PARSER =================
+
+META_RE = re.compile(r"\[SaraPsicologa\]\s+tipo=(cita|bloqueo)\s+local_id=(\d+)")
+
+def parse_meta(description: str):
+    """
+    Devuelve (tipo, local_id) si encuentra la firma.
+    Soporta HTML y texto mezclado.
+    """
+    if not description:
+        return (None, None)
+    m = META_RE.search(description)
+    if not m:
+        return (None, None)
+    return (m.group(1), int(m.group(2)))
+
+TZ_CO = timezone(timedelta(hours=-5))
+
+def _rfc3339_local(dt: datetime) -> str:
+    # Si viene naive, asumimos hora local (Colombia)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=TZ_CO)
+    # Google odia microsegundos
+    dt = dt.replace(microsecond=0)
+    return dt.isoformat()  # queda ...-05:00
+
+def list_events_range(calendar_id: str, dt_ini: datetime, dt_fin: datetime) -> list[dict]:
+    service = get_calendar_service()
+    resp = service.events().list(
+        calendarId=calendar_id,
+        timeMin=_rfc3339_local(dt_ini),
+        timeMax=_rfc3339_local(dt_fin),
+        singleEvents=True,
+        orderBy="startTime",
+        maxResults=2500,
+    ).execute()
+    return resp.get("items", [])
+
+def delete_event_by_id(calendar_id: str, event_id: str) -> None:
+    service = get_calendar_service()
+    try:
+        service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+    except Exception as e:
+        # Si ya no existe en Google, lo tratamos como OK
+        s = str(e)
+        if "404" in s or "notFound" in s:
+            return
+        raise
 
 # ================= CONFIG =================
 
@@ -21,6 +71,8 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 
 CREDENTIALS_FILE = os.path.join(DATA_DIR, "google_credentials.json")
 TOKEN_FILE = os.path.join(DATA_DIR, "google_token.json")
+
+APP_TAG = "[SaraPsicologa]"
 
 # ================= COLORES =================
 # https://developers.google.com/calendar/api/v3/reference/colors
@@ -155,13 +207,26 @@ def sync_cita_to_google(cita: dict, calendar_id: str):
     nombre = (cita.get("nombre_completo") or "Paciente").strip()
     motivo = (cita.get("motivo") or "").strip()
     estado = (cita.get("estado") or "reservado").strip()
+    canal = (cita.get("canal") or "").strip()
 
     summary = f"{nombre}"
 
+    meta_line = f"{APP_TAG} tipo=cita local_id={cita_id}"
+    meta_html = f"<br><br><small><i>{meta_line}</i></small>"
+
+    desc_html = ""
+    if motivo:
+        desc_html += f"<b>Motivo:</b> {motivo}<br>"
+    if canal:
+        desc_html += f"<b>Canal:</b> {canal}"
+
+    description = (desc_html + meta_html).strip()
+
     event_body = {
         "summary": summary,
-        # Nunca mandes None: Google puede rechazarlo
-        "description": motivo,
+        "description": (
+            f"{description}\n"
+        ),
         "start": {
             "dateTime": dt_inicio.isoformat(),
             "timeZone": TIMEZONE,
@@ -320,10 +385,14 @@ def sync_bloqueo_to_google(bloqueo: dict, calendar_id: str):
 
     motivo = (bloqueo.get("motivo") or "Bloqueo").strip()
     summary = f"{motivo}"
+    meta_line = f"{APP_TAG} tipo=bloqueo local_id={bloqueo_id}"
+    meta_html = f"<br><br><small><i>{meta_line}</i></small>"
+
+    description = (motivo or "").strip() + meta_html
 
     event_body = {
         "summary": summary,
-        "description": motivo,
+        "description": f"{description}\n",
         "start": {"dateTime": dt_inicio.isoformat(), "timeZone": TIMEZONE},
         "end": {"dateTime": dt_fin.isoformat(), "timeZone": TIMEZONE},
         "colorId": GOOGLE_COLOR_BY_ESTADO.get("bloqueo", "8"),
@@ -376,5 +445,7 @@ def delete_bloqueo_from_google(bloqueo_id: int, calendar_id: str):
         service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
     finally:
         delete_bloqueo_mapping(int(bloqueo_id))
+        
+        
         
 # ================= END =================
