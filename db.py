@@ -400,10 +400,17 @@ def init_db() -> None:
             titulo TEXT,
             contenido TEXT NOT NULL,
             observaciones TEXT,
-            FOREIGN KEY (historia_id) REFERENCES historia_clinica (id)
+            cita_id INTEGER,
+            FOREIGN KEY (historia_id) REFERENCES historia_clinica (id),
+            FOREIGN KEY (cita_id) REFERENCES citas (id)
         );
         """
     )
+    cur.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_sesiones_clinicas_cita_id
+        ON sesiones_clinicas(cita_id)
+        WHERE cita_id IS NOT NULL;
+    """)
 
     # Tabla de paquetes de arriendo de consultorio
     cur.execute(
@@ -949,6 +956,9 @@ def eliminar_diagnostico_historia(dx_id: int):
     conn.commit()
     conn.close()
 
+# Sesiones clínicas
+from typing import Any, Dict, List, Optional
+import sqlite3
 
 def listar_sesiones_clinicas(historia_id: int) -> List[sqlite3.Row]:
     """Lista sesiones clínicas de una historia, ordenadas de la más reciente a la más antigua."""
@@ -968,9 +978,28 @@ def listar_sesiones_clinicas(historia_id: int) -> List[sqlite3.Row]:
     return filas
 
 
+def _normalizar_cita_id(valor: Any) -> Optional[int]:
+    """
+    Convierte a int si es válido, si no devuelve None.
+    Acepta None, "", "  ", 0 (lo vuelve None), "123", 123.
+    """
+    if valor is None:
+        return None
+    if isinstance(valor, str):
+        valor = valor.strip()
+        if not valor:
+            return None
+    try:
+        n = int(valor)
+        return n if n > 0 else None
+    except Exception:
+        return None
+
+
 def guardar_sesion_clinica(datos: Dict[str, Any]) -> int:
     """
     Crea o actualiza una sesión clínica.
+
     Espera:
       - id (opcional)
       - historia_id
@@ -978,26 +1007,54 @@ def guardar_sesion_clinica(datos: Dict[str, Any]) -> int:
       - titulo
       - contenido
       - observaciones
+      - cita_id (opcional)  -> FK a citas(id)
     """
     conn = get_connection()
     cur = conn.cursor()
 
-    if datos.get("id"):
+    sesion_id = datos.get("id")
+    historia_id = datos.get("historia_id")
+    fecha = datos.get("fecha")
+    titulo = datos.get("titulo")
+    contenido = datos.get("contenido")
+    observaciones = datos.get("observaciones")
+
+    cita_id = _normalizar_cita_id(datos.get("cita_id"))
+
+    # --- Validación opcional: 1 cita -> 1 sesión clínica ---
+    # Si tu DB ya tiene UNIQUE parcial, esto igual ayuda a dar un error más amigable.
+    if cita_id is not None:
+        if sesion_id:
+            cur.execute(
+                "SELECT id FROM sesiones_clinicas WHERE cita_id = ? AND id <> ? LIMIT 1;",
+                (cita_id, sesion_id),
+            )
+        else:
+            cur.execute(
+                "SELECT id FROM sesiones_clinicas WHERE cita_id = ? LIMIT 1;",
+                (cita_id,),
+            )
+        dup = cur.fetchone()
+        if dup:
+            conn.close()
+            raise ValueError(f"Esta cita (id={cita_id}) ya está vinculada a otra sesión clínica (sesión id={dup['id'] if isinstance(dup, sqlite3.Row) else dup[0]}).")
+
+    if sesion_id:
         cur.execute(
             """
             UPDATE sesiones_clinicas
-            SET fecha = ?, titulo = ?, contenido = ?, observaciones = ?
+            SET fecha = ?, titulo = ?, contenido = ?, observaciones = ?, cita_id = ?
             WHERE id = ?;
             """,
             (
-                datos.get("fecha"),
-                datos.get("titulo"),
-                datos.get("contenido"),
-                datos.get("observaciones"),
-                datos.get("id"),
+                fecha,
+                titulo,
+                contenido,
+                observaciones,
+                cita_id,
+                sesion_id,
             ),
         )
-        sesion_id = datos["id"]
     else:
         cur.execute(
             """
@@ -1006,22 +1063,24 @@ def guardar_sesion_clinica(datos: Dict[str, Any]) -> int:
                 fecha,
                 titulo,
                 contenido,
-                observaciones
-            ) VALUES (?, ?, ?, ?, ?);
+                observaciones,
+                cita_id
+            ) VALUES (?, ?, ?, ?, ?, ?);
             """,
             (
-                datos.get("historia_id"),
-                datos.get("fecha"),
-                datos.get("titulo"),
-                datos.get("contenido"),
-                datos.get("observaciones"),
+                historia_id,
+                fecha,
+                titulo,
+                contenido,
+                observaciones,
+                cita_id,
             ),
         )
         sesion_id = cur.lastrowid
 
     conn.commit()
     conn.close()
-    return sesion_id
+    return int(sesion_id)
 
 
 def eliminar_sesion_clinica(sesion_id: int) -> None:

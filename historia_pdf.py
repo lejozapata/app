@@ -1,5 +1,6 @@
 import os
 from datetime import datetime, date
+import sqlite3
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
@@ -390,6 +391,7 @@ def generar_pdf_historia(
     story.append(Spacer(1, 8))
 
     # ==========================================================
+    # ==========================================================
     # SESIONES CLÍNICAS
     # ==========================================================
 
@@ -400,21 +402,71 @@ def generar_pdf_historia(
     if not sesiones:
         story.append(_p("No hay sesiones registradas.", NORMAL_STYLE))
     else:
+        # --- precargar horas de citas para las sesiones vinculadas ---
+        cita_hora_map = {}
+        try:
+            cita_ids = []
+            for s in (sesiones or []):
+                sd = dict(s) if not isinstance(s, dict) else s
+                cid = sd.get("cita_id")
+                if cid:
+                    try:
+                        cita_ids.append(int(cid))
+                    except Exception:
+                        pass
+
+            cita_ids = sorted(set(cita_ids))
+            if cita_ids:
+                conn = sqlite3.connect(DB_PATH)
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+                qmarks = ",".join(["?"] * len(cita_ids))
+                cur.execute(f"SELECT id, fecha_hora FROM citas WHERE id IN ({qmarks});", tuple(cita_ids))
+                for r in cur.fetchall():
+                    try:
+                        cita_hora_map[int(r["id"])] = r["fecha_hora"]
+                    except Exception:
+                        pass
+                conn.close()
+        except Exception:
+            cita_hora_map = {}
+
         for idx, s in enumerate(sesiones, start=1):
-            story.append(_p(f"Cita {idx} - Fecha: {s['fecha']}", NORMAL_STYLE, bold=True))
+            s = dict(s) if not isinstance(s, dict) else s
+
+            # Fecha a mostrar:
+            # - Si hay cita_id => usar citas.fecha_hora (con hora real)
+            # - Si NO hay cita_id => usar sesiones_clinicas.fecha (solo fecha)
+            fecha_txt = (s.get("fecha") or "").strip()
+            cid = s.get("cita_id")
+
+            if cid:
+                try:
+                    fh = cita_hora_map.get(int(cid))
+                except Exception:
+                    fh = None
+
+                if fh:
+                    try:
+                        fecha_txt = datetime.fromisoformat(str(fh)).strftime("%Y-%m-%d %H:%M")
+                    except Exception:
+                        # fallback: al menos yyyy-mm-dd HH:MM si viene como string
+                        fecha_txt = str(fh)[:16]
+
+            story.append(_p(f"Cita {idx} - Fecha: {fecha_txt}", NORMAL_STYLE, bold=True))
             story.append(Spacer(1, 2))
 
-            titulo = s.get("titulo") or ""
+            titulo = (s.get("titulo") or "").strip()
             if titulo:
                 story.append(_p(titulo, NORMAL_STYLE))
-                story.append(Spacer(1, 2))
 
-            story.append(_p(s["contenido"], NORMAL_STYLE))
-            story.append(Spacer(1, 2))
+            contenido = (s.get("contenido") or "").strip()
+            if contenido:
+                story.append(_p(contenido, NORMAL_STYLE))
 
-            obs = s.get("observaciones") or ""
+            obs = (s.get("observaciones") or "").strip()
             if obs:
-                story.append(_p("Observaciones:", SMALL_STYLE, bold=True))
+                story.append(Spacer(1, 2))
                 story.append(_p(obs, SMALL_STYLE))
 
             story.append(Spacer(1, 4))

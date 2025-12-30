@@ -6,6 +6,7 @@ import flet as ft
 import asyncio
 import time
 import re
+import sqlite3
 
 from .historia_pdf import generar_pdf_historia
 from .markdown_editor import MarkdownEditor
@@ -21,10 +22,12 @@ from .db import (
     eliminar_sesion_clinica,
     listar_antecedentes_medicos,
     listar_antecedentes_psicologicos,
+    listar_citas_por_paciente,
     # Diagnósticos
     listar_diagnosticos_historia,
     agregar_diagnostico_historia,
     eliminar_diagnostico_historia,
+    get_connection,
 )
 
 
@@ -41,6 +44,36 @@ def build_historia_view(page: ft.Page) -> ft.Control:
     paciente_actual: Dict[str, Any] = {"value": None}
     historia_actual: Dict[str, Any] = {"id": None}
     sesion_editando: Dict[str, Any] = {"id": None}
+    
+    
+    # helper para verificar si ya existe sesión vinculada a una cita
+    def existe_sesion_para_cita(cita_id: int, excluir_sesion_id: int | None = None) -> bool:
+        """
+        True si ya existe una sesión clínica vinculada a esa cita_id.
+        excluir_sesion_id sirve para permitir editar la misma sesión sin bloquear.
+        """
+        try:
+            conn = get_connection()
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+
+            if excluir_sesion_id:
+                cur.execute(
+                    "SELECT 1 FROM sesiones_clinicas WHERE cita_id = ? AND id <> ? LIMIT 1;",
+                    (cita_id, excluir_sesion_id),
+                )
+            else:
+                cur.execute(
+                    "SELECT 1 FROM sesiones_clinicas WHERE cita_id = ? LIMIT 1;",
+                    (cita_id,),
+                )
+
+            row = cur.fetchone()
+            conn.close()
+            return row is not None
+        except Exception:
+            return False
+    
 
     # -------------------- Selección de paciente --------------------
 
@@ -745,11 +778,32 @@ def build_historia_view(page: ft.Page) -> ft.Control:
         width=150,
         read_only=True,
     )
+    
+    # ---- Vincular con cita ----
+    switch_vincular_cita = ft.Switch(
+        label="Vincular con cita agendada",
+        value=False,
+    )
+
+    dd_citas = ft.Dropdown(
+        label="Seleccionar cita",
+        width=500,
+        visible=False,
+    )
 
     dp_sesion = ft.DatePicker(
         first_date=date(2000, 1, 1),
         last_date=date(2100, 12, 31),
     )
+    
+    def _on_toggle_vincular(e):
+        dd_citas.visible = switch_vincular_cita.value
+        if switch_vincular_cita.value:
+            cargar_citas_paciente()
+        if dd_citas.page:
+            dd_citas.update()
+
+    switch_vincular_cita.on_change = _on_toggle_vincular
 
     def _on_change_fecha_sesion(e):
         if dp_sesion.value:
@@ -839,6 +893,10 @@ def build_historia_view(page: ft.Page) -> ft.Control:
         txt_contenido_sesion.visible = True
         md_editor.visible = False
         md_editor.set_value("")
+        
+        switch_vincular_cita.value = False
+        dd_citas.visible = False
+        dd_citas.value = None
 
         for c in [
             txt_fecha_sesion,
@@ -847,6 +905,8 @@ def build_historia_view(page: ft.Page) -> ft.Control:
             txt_contenido_sesion,
             md_editor,
             txt_obs_sesion,
+            switch_vincular_cita,
+            dd_citas,
         ]:
             if c.page is not None:
                 c.update()
@@ -859,20 +919,58 @@ def build_historia_view(page: ft.Page) -> ft.Control:
             return
 
         sesiones = listar_sesiones_clinicas(historia_actual["id"])
-        for s in sesiones:
+
+        for idx, s in enumerate(sesiones or [], start=1):
+            s_dict = dict(s)  # sqlite3.Row -> dict
+
+            sesion_id = s_dict["id"]
+
             btn_editar = ft.TextButton(
                 "Editar",
                 on_click=lambda e, ses=s: cargar_sesion_en_form(ses),
             )
             btn_eliminar = ft.TextButton(
                 "Eliminar",
-                on_click=lambda e, sid=s["id"]: eliminar_sesion_click(sid),
+                on_click=lambda e, sid=sesion_id: eliminar_sesion_click(sid),
             )
+
+            # ---------------------------------------------
+            # Fecha a mostrar:
+            # - Si hay cita_id => usar citas.fecha_hora (con hora real)
+            # - Si NO hay cita_id => usar sesiones_clinicas.fecha (solo fecha)
+            # ---------------------------------------------
+            fecha_txt = s_dict.get("fecha") or ""
+            cita_id = s_dict.get("cita_id")
+
+            if cita_id:
+                try:
+                    conn = get_connection()
+                    conn.row_factory = sqlite3.Row
+                    cur = conn.cursor()
+                    cur.execute("SELECT fecha_hora FROM citas WHERE id = ? LIMIT 1;", (cita_id,))
+                    row_cita = cur.fetchone()
+                    conn.close()
+
+                    if row_cita and row_cita["fecha_hora"]:
+                        try:
+                            fecha_txt = datetime.fromisoformat(str(row_cita["fecha_hora"])).strftime("%Y-%m-%d %H:%M")
+                        except Exception:
+                            fecha_txt = str(row_cita["fecha_hora"])
+                    else:
+                        # Si no encontramos la cita, al menos mostramos la fecha de la sesión
+                        fecha_txt = s_dict.get("fecha") or ""
+                except Exception:
+                    # fallback silencioso
+                    fecha_txt = s_dict.get("fecha") or ""
+            else:
+                # Sesión manual: NO inventar 00:00
+                fecha_txt = s_dict.get("fecha") or ""
+
             tabla_sesiones.rows.append(
                 ft.DataRow(
                     cells=[
-                        ft.DataCell(ft.Text(s["fecha"])),
-                        ft.DataCell(ft.Text(s["titulo"] if s["titulo"] else "")),
+                        ft.DataCell(ft.Text(f"Cita {idx} - Fecha: {fecha_txt}")),
+                        ft.DataCell(ft.Text(s_dict.get("titulo") or "")),
                         ft.DataCell(ft.Row([btn_editar, btn_eliminar], spacing=5)),
                     ]
                 )
@@ -881,19 +979,119 @@ def build_historia_view(page: ft.Page) -> ft.Control:
         if tabla_sesiones.page is not None:
             tabla_sesiones.update()
 
-    def cargar_sesion_en_form(s: Dict[str, Any]):
-        sesion_editando["id"] = s["id"]
-        txt_fecha_sesion.value = s["fecha"]
-        txt_titulo_sesion.value = s["titulo"] or ""
+        cargar_citas_paciente()
+            
+    def _row_to_dict(r):
+        try:
+            return dict(r)
+        except Exception:
+            return r  # ya es dict
 
-        contenido = s["contenido"] or ""
+    def cargar_citas_paciente():
+        dd_citas.options.clear()
+        dd_citas.value = None
+
+        pac = paciente_actual["value"]
+        if not pac:
+            if dd_citas.page:
+                dd_citas.update()
+            return
+
+        citas = listar_citas_por_paciente(pac["documento"])
+
+        # ✅ set de citas que ya tienen sesión
+        citas_con_sesion = set()
+        try:
+            conn = get_connection()
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT cita_id
+                FROM sesiones_clinicas
+                WHERE cita_id IS NOT NULL;
+                """
+            )
+            for r in cur.fetchall():
+                try:
+                    citas_con_sesion.add(int(r["cita_id"]))
+                except Exception:
+                    pass
+            conn.close()
+        except Exception:
+            pass
+
+        for r in citas or []:
+            c = dict(r)
+            cita_id = c.get("id")
+            if not cita_id:
+                continue
+
+            fecha = c.get("fecha_hora") or c.get("inicio") or c.get("fecha") or ""
+            canal = (c.get("canal") or "").strip()
+
+            # si tu campo "servicio" trae "Servicio: X - Valor: Y", aquí NO lo uses para HC
+            # mejor canal + fecha
+            label_base = " · ".join(x for x in [str(fecha), canal] if str(x).strip())
+
+            ya_tiene = int(cita_id) in citas_con_sesion
+
+            # ✅ Marca visual
+            label = f"✅ {label_base}" if ya_tiene else label_base
+
+            opt = ft.dropdown.Option(key=str(cita_id), text=label)
+
+            # (Opcional) bloquear selección si ya tiene sesión
+            # OJO: depende de tu versión de flet si Option soporta `disabled`
+            try:
+                opt.disabled = ya_tiene and (str(cita_id) != str(dd_citas.value or ""))
+            except Exception:
+                pass
+
+            dd_citas.options.append(opt)
+
+        if dd_citas.page:
+            dd_citas.update()
+
+    def cargar_sesion_en_form(s):
+        # ✅ s puede ser sqlite3.Row o dict
+        s = dict(s) if not isinstance(s, dict) else s
+
+        sesion_editando["id"] = s.get("id")
+
+        # --- datos básicos ---
+        txt_fecha_sesion.value = s.get("fecha") or date.today().isoformat()
+        txt_titulo_sesion.value = s.get("titulo") or ""
+
+        contenido = s.get("contenido") or ""
         txt_contenido_sesion.value = contenido
-        txt_contenido_sesion.update()
-
         md_editor.set_value(contenido)
-        md_editor.update()
 
-        txt_obs_sesion.value = s["observaciones"] or ""
+        txt_obs_sesion.value = s.get("observaciones") or ""
+
+        # --- reset estado vinculación ---
+        switch_vincular_cita.value = False
+        dd_citas.visible = False
+        dd_citas.value = None
+
+        # --- cargar citas del paciente antes de setear dd ---
+        cargar_citas_paciente()
+
+        # --- vinculación si aplica ---
+        cita_id = s.get("cita_id")
+        if cita_id:
+            switch_vincular_cita.value = True
+            dd_citas.visible = True
+
+            # asignar solo si existe en options
+            cid = str(cita_id)
+            if any(opt.key == cid for opt in dd_citas.options):
+                dd_citas.value = cid
+            else:
+                # si no está en el dropdown (por ejemplo filtro de citas), lo dejamos visible pero sin value
+                dd_citas.value = None
+
+        # --- refrescar UI ---
         for c in [
             txt_fecha_sesion,
             txt_titulo_sesion,
@@ -901,9 +1099,12 @@ def build_historia_view(page: ft.Page) -> ft.Control:
             txt_contenido_sesion,
             md_editor,
             txt_obs_sesion,
+            switch_vincular_cita,
+            dd_citas,
         ]:
-            if c.page is not None:
+            if c.page:
                 c.update()
+
 
     def eliminar_sesion_click(sesion_id: int):
         eliminar_sesion_clinica(sesion_id)
@@ -943,13 +1144,30 @@ def build_historia_view(page: ft.Page) -> ft.Control:
                 mensaje_sesion.update()
             return
 
+        cita_id = None
+        if switch_vincular_cita.value:
+            if not dd_citas.value:
+                mensaje_sesion.value = "Debes seleccionar una cita."
+                mensaje_sesion.update()
+                return
+            cita_id = int(dd_citas.value)
+            
+        # ✅ Evitar duplicar: una cita solo puede tener 1 sesión clínica
+        if cita_id is not None:
+            if existe_sesion_para_cita(cita_id, excluir_sesion_id=sesion_editando["id"]):
+                mensaje_sesion.value = "Esta cita ya tiene una sesión clínica creada. Edita la sesión existente."
+                if mensaje_sesion.page:
+                    mensaje_sesion.update()
+                return
+
         datos_sesion = {
             "id": sesion_editando["id"],
             "historia_id": historia_actual["id"],
             "fecha": fecha_sesion,
-            "titulo": (txt_titulo_sesion.value or "").strip() or None,
+            "titulo": (txt_titulo_sesion.value or "").strip(),
             "contenido": contenido_texto,
-            "observaciones": (txt_obs_sesion.value or "").strip() or None,
+            "observaciones": (txt_obs_sesion.value or "").strip(),
+            "cita_id": cita_id,
         }
 
         guardar_sesion_clinica(datos_sesion)
@@ -966,6 +1184,75 @@ def build_historia_view(page: ft.Page) -> ft.Control:
         icon=ft.Icons.SAVE,
         on_click=guardar_sesion,
     )
+    
+    def _on_cita_selected(e):
+        if not dd_citas.value:
+            return
+
+        pac = paciente_actual["value"]
+        if not pac:
+            return
+
+        # Buscar la cita seleccionada
+        citas = listar_citas_por_paciente(pac["documento"])
+        sel = None
+
+        for r in citas or []:
+            c = dict(r)  # sqlite3.Row -> dict
+            if str(c.get("id")) == str(dd_citas.value):
+                sel = c
+                break
+
+        if not sel:
+            return
+
+        # --- Fecha de la sesión ---
+        fecha = sel.get("fecha_hora") or sel.get("fecha") or ""
+        if fecha:
+            txt_fecha_sesion.value = str(fecha)[:10]
+
+        # --- Construcción segura del título ---
+        def clean(val):
+            if not val:
+                return ""
+            val = str(val)
+            # eliminar precios, monedas y números sueltos
+            val = re.sub(r"\$?\s*\d+(\.\d+)?", "", val)
+            val = val.replace("COP", "").replace("USD", "")
+            return val.strip()
+
+        servicio = clean(
+            sel.get("servicio_nombre")
+            or sel.get("servicio")
+            or sel.get("tipo_servicio")
+            or ""
+        )
+
+        canal = clean(
+            sel.get("canal")
+            or sel.get("modalidad")
+            or ""
+        )
+
+        partes = [p for p in [servicio, canal] if p]
+
+        titulo_sugerido = "Sesión"
+        if partes:
+            titulo_sugerido = "Sesión · " + " · ".join(partes)
+
+        # Solo autocompletar si el usuario no ha escrito nada
+        if not (txt_titulo_sesion.value or "").strip():
+            txt_titulo_sesion.value = titulo_sugerido
+
+        # refrescar UI
+        if txt_fecha_sesion.page:
+            txt_fecha_sesion.update()
+        if txt_titulo_sesion.page:
+            txt_titulo_sesion.update()
+            
+    dd_citas.on_change = _on_cita_selected
+
+    dd_citas.on_change = _on_cita_selected
 
     seccion_sesiones = ft.Column(
         [
@@ -977,6 +1264,8 @@ def build_historia_view(page: ft.Page) -> ft.Control:
             ),
             ft.Divider(),
             lbl_paciente_seleccionado,
+
+            # Fecha
             ft.Row(
                 [
                     txt_fecha_sesion,
@@ -988,12 +1277,19 @@ def build_historia_view(page: ft.Page) -> ft.Control:
                 ],
                 spacing=10,
             ),
+
+            # ✅ NUEVO: Switch + selector de citas (el DD se oculta solo si switch OFF)
+            switch_vincular_cita,
+            dd_citas,
+
+            # Resto del formulario
             txt_titulo_sesion,
             switch_markdown,
             txt_contenido_sesion,
             md_editor,
             txt_obs_sesion,
             mensaje_sesion,
+
             ft.Row(
                 [
                     ft.TextButton("Nueva sesión", on_click=lambda e: limpiar_form_sesion()),
