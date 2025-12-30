@@ -3,14 +3,14 @@ import smtplib
 import threading
 import asyncio
 from email.message import EmailMessage
-from datetime import time
+from datetime import date, datetime, timedelta, time as dt_time
+import time as pytime
 from .notificaciones_email import (
     enviar_correo_cita,
     enviar_correo_cancelacion,
     ConfigSMTPIncompleta,
 )
 import flet as ft
-from datetime import date, datetime, timedelta
 import threading
 import urllib.parse
 from .citas_tabla_view import build_citas_tabla_view
@@ -971,6 +971,13 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
 
         motivo = f"Servicio: {srv['nombre']} - Valor: {precio_final:,.0f}"
         notas = (txt_notas.value or "").strip()
+        
+        # Servicio_id desde dropdown (antes de guardar)
+        sid = dd_servicios.value
+        if sid is not None and str(sid).strip() != "":
+            servicio_id_val = int(str(sid).strip())
+        else:
+            servicio_id_val = None
 
         datos_cita = {
             "documento_paciente": reserva["paciente"]["documento"],
@@ -2057,15 +2064,29 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
             chk_notificar_email.value = False
 
         # Servicio y precio desde "motivo"
-        nombre_serv, precio_motivo = parsear_servicio_y_precio(cita_row.get("motivo", ""))
-
+        # Servicio: PRIORIDAD 1 = servicio_id (nuevo modelo). Fallback = parse del motivo (modelo viejo)
         dd_servicios.value = None
         reserva["servicio"] = None
-        for s in servicios:
-            if s["nombre"] == nombre_serv:
-                dd_servicios.value = str(s["id"])
-                reserva["servicio"] = s
-                break
+
+        sid_db = cita_row.get("servicio_id", None)
+        try:
+            if sid_db is not None and str(sid_db).strip() != "":
+                sid_db_int = int(str(sid_db).strip())
+                srv = next((s for s in servicios if int(s.get("id")) == sid_db_int), None)
+                if srv:
+                    dd_servicios.value = str(srv["id"])   # dropdown espera string
+                    reserva["servicio"] = srv
+        except Exception:
+            pass
+
+        precio_motivo = ""
+        if not reserva["servicio"]:
+            nombre_serv, precio_motivo = parsear_servicio_y_precio(cita_row.get("motivo", "") or "")
+            for s in servicios:
+                if (s.get("nombre") or "").strip() == (nombre_serv or "").strip():
+                    dd_servicios.value = str(s["id"])
+                    reserva["servicio"] = s
+                    break
 
         # Canal desde la cita (nuevo) o derivado del modelo viejo
         canal_db = (cita_row.get("canal") or "").strip()
@@ -2415,153 +2436,188 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         on_click=cell_on_click,
     )
         
-        
-    # ----------------- SINCRONIZACIÓN GOOGLE CALENDAR -------------------   
+    # ----------------- SINCRONIZACIÓN GOOGLE CALENDAR -------------------
     def sync_google_semana_actual(e=None):
-        
+
+        # Imports locales para no ensuciar arriba (puedes moverlos a imports globales si quieres)
+        from .google_calendar_import import (
+            detectar_candidatos_semana,
+            mostrar_dialogo_revisar_import,
+            importar_seleccionados,
+        )
+
+        # ---------------- VALIDACIÓN INICIAL ----------------
         calendar_id = get_google_calendar_id()
         if not calendar_id:
             lbl_sync_status.value = "Google Calendar deshabilitado (actívalo en Configuración)."
             page.update()
-
-            async def _clear_label_luego():
-                await asyncio.sleep(4)
-                lbl_sync_status.value = ""
-                page.update()
-
-            page.run_task(_clear_label_luego)
             return
-        
+
         btn_sync_semana.disabled = True
         btn_sync_semana.text = "Sincronizando..."
         lbl_sync_status.value = "Sincronizando..."
         page.update()
 
-        ok_citas = ok_bloq = fail = 0
-        citas = []
-        bloqueos = []
-        
-        try:
-            dias = obtener_dias_semana(semana_lunes["value"])
-            inicio_dt = datetime.combine(dias[0], time(0, 0, 0))
-            fin_dt = datetime.combine(dias[-1], time(23, 59, 59))
+        ok_citas = 0
+        ok_bloq = 0
+        fail = 0
+        abrio_dialogo_import = False
 
+        # ---------- FUNCIONES INTERNAS (SIN LAMBDAS) ----------
+        def mostrar_mensaje(texto: str, duracion: int = 4, limpiar_si_sigue_igual: bool = True):
+            lbl_sync_status.value = texto
+            page.update()
+
+            async def _limpiar_async():
+                await asyncio.sleep(duracion)
+                if (not limpiar_si_sigue_igual) or (lbl_sync_status.value == texto):
+                    lbl_sync_status.value = ""
+                    page.update()
+
+            page.run_task(_limpiar_async)
+
+        def ejecutar_prune(cal_id, dt_ini, dt_fin):
+            try:
+                eventos = list_events_range(cal_id, dt_ini, dt_fin)
+                borrados = 0
+
+                for ev in eventos:
+                    tipo, local_id = parse_meta(ev.get("description") or "")
+                    if not tipo or not local_id:
+                        continue
+
+                    if tipo == "cita" and not existe_cita_por_id(local_id):
+                        delete_event_by_id(cal_id, ev["id"])
+                        borrados += 1
+                    elif tipo == "bloqueo" and not existe_bloqueo_por_id(local_id):
+                        delete_event_by_id(cal_id, ev["id"])
+                        borrados += 1
+
+                if borrados > 0:
+                    mostrar_mensaje(f"🧹 Limpieza: {borrados} eventos huérfanos", duracion=4)
+
+            except Exception as ex:
+                print("⚠️ Error PRUNE:", ex)
+                mostrar_mensaje("⚠️ Error limpiando eventos", duracion=4)
+
+        def _refrescar_agenda_post_import():
+            # Re-dibuja / re-carga la agenda (usa tu función real de refresco)
+            dibujar_calendario_semanal()
+            page.update()
+                
+        # Callback del diálogo (esto reemplaza tu antiguo on_confirm_import)
+        def al_confirmar_import(seleccionados: list[dict]):
+            # seleccionados debe traer: event_id + documento_paciente
+            if not seleccionados:
+                mostrar_mensaje("📥 No seleccionaste nada para importar.", duracion=3)
+                return
+
+            mostrar_mensaje(f"📥 Importando {len(seleccionados)}...", duracion=6, limpiar_si_sigue_igual=False)
+
+            def tarea_import():
+                try:
+                    res = importar_seleccionados(calendar_id, seleccionados)
+                    importados = int(res.get("importados", 0))
+                    fallos = int(res.get("fallos", 0))
+
+                    async def _ui():
+                        # Importante: refrescar agenda después del import (si tienes función)
+                        # refrescar_agenda()  # <- si existe, llama aquí
+
+                        lbl_sync_status.value = f"📥 Import listo ✅ Importados:{importados} · Fallos:{fallos}"
+                        page.update()
+                        await asyncio.sleep(5)
+                        lbl_sync_status.value = ""
+                        page.update()
+
+                    page.run_task(_ui)
+
+                except Exception as ex:
+                    print("⚠️ Error importando:", ex)
+
+                    async def _ui_err():
+                        lbl_sync_status.value = "⚠️ Error importando eventos desde Google"
+                        page.update()
+                        await asyncio.sleep(5)
+                        lbl_sync_status.value = ""
+                        page.update()
+
+                    page.run_task(_ui_err)
+
+            page.run_thread(tarea_import)
+
+        try:
+            # ---------------- CALCULAR RANGO ----------------
+            dias = obtener_dias_semana(semana_lunes["value"])
+            inicio_dt = datetime.combine(dias[0], dt_time(0, 0))
+            fin_dt = datetime.combine(dias[-1], dt_time(23, 59, 59))
+
+            # ---------------- OBTENER DATOS ----------------
             citas = listar_citas_con_paciente_rango(
                 inicio_dt.strftime("%Y-%m-%d %H:%M"),
                 fin_dt.strftime("%Y-%m-%d %H:%M"),
             )
-
             bloqueos = listar_bloqueos_rango(
                 inicio_dt.strftime("%Y-%m-%d %H:%M"),
                 fin_dt.strftime("%Y-%m-%d %H:%M"),
             )
 
-            # Snack “iniciando”
             page.snack_bar = ft.SnackBar(
-                content=ft.Text(f"Encontré {len(citas)} citas y {len(bloqueos)} bloqueos. Sincronizando..."),
+                content=ft.Text(f"Encontré {len(citas)} citas y {len(bloqueos)} bloqueos"),
                 bgcolor=ft.Colors.GREY_300,
                 duration=2000,
             )
             page.snack_bar.open = True
             page.update()
 
-            for r in citas:
+            # ---------------- SYNC CITAS ----------------
+            for c in citas:
                 try:
-                    sync_cita_to_google(dict(r), calendar_id)
+                    sync_cita_to_google(dict(c), calendar_id)
                     ok_citas += 1
-                    
                 except Exception as ex:
-                    fail += 1
                     print("⚠️ Error sync cita:", ex)
+                    fail += 1
 
+            # ---------------- SYNC BLOQUEOS ----------------
             for b in bloqueos:
                 try:
                     sync_bloqueo_to_google(dict(b), calendar_id)
                     ok_bloq += 1
                 except Exception as ex:
-                    fail += 1
                     print("⚠️ Error sync bloqueo:", ex)
-                    
-        
-            # ---------------- PRUNE (limpiar eliminados en Google) ----------------
-            prune_borrados = {"n": 0}
+                    fail += 1
 
-            async def _snack_prune_ok():
-                n = prune_borrados["n"]
-                page.snack_bar = ft.SnackBar(
-                    content=ft.Text(f"🧹 Limpieza Google: borrados {n} eventos huérfanos"),
-                    bgcolor=ft.Colors.GREY_300,
-                    duration=4500,
+            # ---------------- PRUNE ASYNC (SIN LAMBDA) ----------------
+            def correr_prune():
+                ejecutar_prune(calendar_id, inicio_dt, fin_dt)
+
+            page.run_thread(correr_prune)
+
+            # ---------------- DETECTAR + MOSTRAR IMPORT (PASO 3) ----------------
+            candidatos = detectar_candidatos_semana(calendar_id, inicio_dt, fin_dt)
+
+            if candidatos:
+                abrio_dialogo_import = True
+                mostrar_mensaje(f"📥 Detecté {len(candidatos)} eventos por revisar", duracion=4)
+                mostrar_dialogo_revisar_import(
+                    page,
+                    calendar_id,
+                    candidatos,
+                    on_import_done=_refrescar_agenda_post_import,
                 )
-                page.snack_bar.open = True
-                page.update()
+            else:
+                mostrar_mensaje("Listo ✅ No hay eventos por importar", duracion=4)
 
-            async def _snack_prune_err():
-                page.snack_bar = ft.SnackBar(
-                    content=ft.Text("⚠️ Error en limpieza (PRUNE) de Google Calendar"),
-                    bgcolor=ft.Colors.AMBER_300,
-                    duration=4500,
-                )
-                page.snack_bar.open = True
-                page.update()
-
-            def tarea_prune(cal_id: str, dt_ini: datetime, dt_fin: datetime):
-                try:
-                    eventos = list_events_range(cal_id, dt_ini, dt_fin)
-                    borrados = 0
-
-                    for ev in eventos:
-                        tipo, local_id = parse_meta(ev.get("description") or "")
-                        if not tipo or local_id is None:
-                            continue
-
-                        if tipo == "cita" and not existe_cita_por_id(local_id):
-                            delete_event_by_id(cal_id, ev["id"])
-                            borrados += 1
-                        elif tipo == "bloqueo" and not existe_bloqueo_por_id(local_id):
-                            delete_event_by_id(cal_id, ev["id"])
-                            borrados += 1
-
-                    if borrados:
-                        async def _ui():
-                            lbl_sync_status.value = f"🧹 Limpieza: {borrados} huérfanos"
-                            page.update()
-                            await asyncio.sleep(4)
-                            lbl_sync_status.value = ""
-                            page.update()
-
-                        page.run_task(_ui)
-
-                except Exception as ex:
-                    print("⚠️ Error PRUNE Google:", ex)
-                    page.run_task(_snack_prune_err)
-
-            page.run_thread(lambda: tarea_prune(calendar_id, inicio_dt, fin_dt))
+            # ---------------- RESULTADO FINAL (SIN PISAR DIÁLOGO) ----------------
+            if not abrio_dialogo_import:
+                mostrar_mensaje(f"Listo ✅ Citas:{ok_citas} Bloqueos:{ok_bloq} Fallos:{fail}", duracion=6)
 
         finally:
             btn_sync_semana.disabled = False
             btn_sync_semana.text = "Sincronizar semana"
-
-            page.snack_bar = ft.SnackBar(
-                content=ft.Text(
-                    f"Sincronización lista ✅  Citas: {ok_citas} · Bloqueos: {ok_bloq} · Fallos: {fail}"
-                ),
-                bgcolor=ft.Colors.GREEN_300 if fail == 0 else ft.Colors.AMBER_300,
-                duration=5000,
-            )
-            page.snack_bar.open = True
-
-            lbl_sync_status.value = f"Listo ✅ Citas:{ok_citas} Bloq:{ok_bloq} Fallos:{fail}"
             page.update()
 
-            # ✅ auto-limpiar label a los 4s (sin defs globales)
-            async def _clear_label_luego():
-                await asyncio.sleep(4)
-                lbl_sync_status.value = ""
-                page.update()
-
-            page.run_task(_clear_label_luego)
-        
     btn_sync_semana.on_click = sync_google_semana_actual
     
 

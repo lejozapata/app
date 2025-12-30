@@ -1,3 +1,4 @@
+from __future__ import annotations
 import sqlite3
 from pathlib import Path
 from typing import Dict, List, Any, Optional
@@ -120,6 +121,7 @@ def init_db() -> None:
             fecha_hora_fin TEXT NOT NULL,    
             modalidad TEXT NOT NULL CHECK (modalidad IN ('particular', 'convenio')),
             canal TEXT NOT NULL CHECK (canal IN ('presencial', 'virtual')),
+            servicio_id INTEGER,
             motivo TEXT,
             notas TEXT,
             estado TEXT,
@@ -136,6 +138,9 @@ def init_db() -> None:
         cur.execute("ALTER TABLE citas ADD COLUMN precio REAL DEFAULT 0;")
     if "pagado" not in columnas_citas:
         cur.execute("ALTER TABLE citas ADD COLUMN pagado INTEGER NOT NULL DEFAULT 0;")
+        # ✅ nueva migración
+    if "servicio_id" not in columnas_citas:
+        cur.execute("ALTER TABLE citas ADD COLUMN servicio_id INTEGER;")
 
     # Tabla de antecedentes médicos
     cur.execute(
@@ -607,24 +612,18 @@ def crear_paciente(paciente: Dict[str, Any]) -> None:
     conn.commit()
     conn.close()
 
-
 def listar_pacientes() -> List[sqlite3.Row]:
-    """Devuelve todos los pacientes ordenados por nombre."""
     conn = get_connection()
+    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
-
-    cur.execute(
-        """
+    cur.execute("""
         SELECT *
         FROM pacientes
         ORDER BY nombre_completo COLLATE NOCASE;
-        """
-    )
-
+    """)
     filas = cur.fetchall()
     conn.close()
     return filas
-
 
 def obtener_paciente(documento: str) -> Optional[sqlite3.Row]:
     """Obtiene un paciente por su documento."""
@@ -1046,6 +1045,7 @@ def crear_cita(cita: Dict[str, Any]) -> int:
       - fecha_hora_fin (str, formato 'YYYY-MM-DD HH:MM')    -> fin
       - modalidad (str: 'particular' | 'convenio')
       - canal (str: 'presencial' | 'virtual')  (opcional -> default 'presencial')
+      - servicio_id (int | None) (opcional)
       - motivo (str, opcional)
       - notas (str, opcional)
       - estado (str: 'reservado', 'confirmado', etc.)
@@ -1071,6 +1071,10 @@ def crear_cita(cita: Dict[str, Any]) -> int:
     if "precio" not in datos:
         datos["precio"] = 0
 
+    # Compatibilidad: servicio_id opcional (normaliza vacío -> None)
+    if "servicio_id" not in datos or str(datos.get("servicio_id") or "").strip() == "":
+        datos["servicio_id"] = None
+
     cur.execute(
         """
         INSERT INTO citas (
@@ -1079,6 +1083,7 @@ def crear_cita(cita: Dict[str, Any]) -> int:
             fecha_hora_fin,
             modalidad,
             canal,
+            servicio_id,
             motivo,
             notas,
             estado,
@@ -1090,6 +1095,7 @@ def crear_cita(cita: Dict[str, Any]) -> int:
             :fecha_hora_fin,
             :modalidad,
             :canal,
+            :servicio_id,
             :motivo,
             :notas,
             :estado,
@@ -1103,7 +1109,37 @@ def crear_cita(cita: Dict[str, Any]) -> int:
     cita_id = cur.lastrowid
     conn.commit()
     conn.close()
-    return cita_id
+    return int(cita_id)
+
+
+def obtener_cita_por_id(cita_id: int) -> Optional[sqlite3.Row]:
+    """Obtiene una cita por id o None si no existe."""
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute("SELECT * FROM citas WHERE id = ?;", (cita_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def listar_citas() -> List[sqlite3.Row]:
+    """Lista todas las citas ordenadas por inicio."""
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT *
+        FROM citas
+        ORDER BY datetime(fecha_hora) ASC;
+        """
+    )
+    filas = cur.fetchall()
+    conn.close()
+    return filas
 
 
 def listar_citas_rango(fecha_inicio: str, fecha_fin: str) -> List[sqlite3.Row]:
@@ -1174,6 +1210,46 @@ def listar_citas_con_paciente_rango(fecha_inicio: str, fecha_fin: str) -> List[s
     return filas
 
 
+def listar_citas_con_paciente_y_servicio_rango(fecha_inicio: str, fecha_fin: str) -> List[sqlite3.Row]:
+    """
+    Lista citas que SE SOLAPAN con el rango [fecha_inicio, fecha_fin),
+    incluyendo datos del paciente y el nombre del servicio (si existe).
+
+    Devuelve columnas de 'citas' +:
+      - nombre_completo, indicativo_pais, telefono, email
+      - servicio_nombre (NULL si servicio_id es NULL o no existe)
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    # OJO: asumimos tabla `servicios` con columnas (id, nombre)
+    cur.execute(
+        """
+        SELECT
+            c.*,
+            p.nombre_completo,
+            p.indicativo_pais,
+            p.telefono,
+            p.email,
+            s.nombre AS servicio_nombre
+        FROM citas c
+        JOIN pacientes p
+            ON p.documento = c.documento_paciente
+        LEFT JOIN servicios s
+            ON s.id = c.servicio_id
+        WHERE datetime(c.fecha_hora) < datetime(?)
+          AND datetime(c.fecha_hora_fin) > datetime(?)
+        ORDER BY datetime(c.fecha_hora) ASC;
+        """,
+        (fecha_fin, fecha_inicio),
+    )
+
+    filas = cur.fetchall()
+    conn.close()
+    return filas
+
+
 def existe_cita_en_fecha(fecha_hora: str, cita_id_excluir: Optional[int] = None) -> bool:
     """
     (Opcional) Devuelve True si ya hay una cita que INICIA exactamente en fecha_hora.
@@ -1195,47 +1271,9 @@ def existe_cita_en_fecha(fecha_hora: str, cita_id_excluir: Optional[int] = None)
             (fecha_hora, cita_id_excluir),
         )
 
-    count = cur.fetchone()[0]
+    count = int(cur.fetchone()[0])
     conn.close()
     return count > 0
-
-
-def actualizar_cita(cita_id: int, campos: Dict[str, Any]) -> None:
-    """
-    Actualiza una cita existente.
-
-    'campos' es un diccionario con las columnas a actualizar.
-    Puede incluir:
-      - fecha_hora
-      - fecha_hora_fin
-      - modalidad
-      - canal
-      - motivo
-      - notas
-      - estado
-      - precio
-      - pagado
-      - documento_paciente
-    """
-    if not campos:
-        return
-
-    conn = get_connection()
-    cur = conn.cursor()
-
-    set_clauses = []
-    values: List[Any] = []
-    for columna, valor in campos.items():
-        set_clauses.append(f"{columna} = ?")
-        values.append(valor)
-
-    values.append(cita_id)
-
-    sql = f"UPDATE citas SET {', '.join(set_clauses)} WHERE id = ?;"
-    cur.execute(sql, values)
-
-    conn.commit()
-    conn.close()
 
 
 def existe_cita_en_rango(fecha_inicio: str, fecha_fin: str, cita_id_excluir: int | None = None) -> bool:
@@ -1272,9 +1310,56 @@ def existe_cita_en_rango(fecha_inicio: str, fecha_fin: str, cita_id_excluir: int
             (fecha_fin, fecha_inicio, cita_id_excluir),
         )
 
-    count = cur.fetchone()[0]
+    count = int(cur.fetchone()[0])
     conn.close()
     return count > 0
+
+
+def actualizar_cita(cita_id: int, campos: Dict[str, Any]) -> None:
+    """
+    Actualiza una cita existente.
+
+    'campos' es un diccionario con las columnas a actualizar.
+    Puede incluir:
+      - fecha_hora
+      - fecha_hora_fin
+      - modalidad
+      - canal
+      - servicio_id
+      - motivo
+      - notas
+      - estado
+      - precio
+      - pagado
+      - documento_paciente
+    """
+    if not campos:
+        return
+
+    # Normalizaciones suaves (retrocompatibles)
+    if "canal" in campos and not str(campos.get("canal") or "").strip():
+        campos["canal"] = "presencial"
+
+    if "servicio_id" in campos and str(campos.get("servicio_id") or "").strip() == "":
+        campos["servicio_id"] = None
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    set_clauses: List[str] = []
+    values: List[Any] = []
+
+    for columna, valor in campos.items():
+        set_clauses.append(f"{columna} = ?")
+        values.append(valor)
+
+    values.append(cita_id)
+
+    sql = f"UPDATE citas SET {', '.join(set_clauses)} WHERE id = ?;"
+    cur.execute(sql, values)
+
+    conn.commit()
+    conn.close()
 
 
 def eliminar_cita(cita_id: int) -> None:
@@ -1286,6 +1371,28 @@ def eliminar_cita(cita_id: int) -> None:
 
     conn.commit()
     conn.close()
+
+
+# =====================
+# Helpers opcionales
+# =====================
+
+def asegurar_migracion_citas(cur: sqlite3.Cursor) -> None:
+    """
+    Llama esto dentro de tu init_db() (después de CREATE TABLE IF NOT EXISTS citas).
+    Agrega columnas faltantes de forma segura.
+    """
+    cur.execute("PRAGMA table_info(citas);")
+    cols = [row[1] for row in cur.fetchall()]
+
+    if "precio" not in cols:
+        cur.execute("ALTER TABLE citas ADD COLUMN precio REAL DEFAULT 0;")
+
+    if "pagado" not in cols:
+        cur.execute("ALTER TABLE citas ADD COLUMN pagado INTEGER NOT NULL DEFAULT 0;")
+
+    if "servicio_id" not in cols:
+        cur.execute("ALTER TABLE citas ADD COLUMN servicio_id INTEGER;")
 
 
 # ------------ CONFIGURACIÓN PROFESIONAL -------------
@@ -3875,69 +3982,3 @@ if __name__ == "__main__":
     print(f"Inicializando base de datos en: {DB_PATH}")
     init_db()
     print("Tablas listas.")
-
-    # ---------------- Datos de prueba (idempotentes) ----------------
-    # try:
-    #     conn = get_connection()
-    #     cur = conn.cursor()
-
-    #     # Profesional (config id=1)
-    #     cur.execute(
-    #         """
-    #         INSERT OR IGNORE INTO configuracion_profesional (id, nombre_profesional, hora_inicio, hora_fin, dias_atencion, direccion, zona_horaria, telefono, email)
-    #         VALUES (1, 'Sara Psicóloga', '08:00', '18:00', 'Lunes,Martes,Miercoles,Jueves,Viernes', 'Consultorio', 'America/Bogota', '', '');
-    #         """
-    #     )
-
-    #     # Empresa convenio de prueba
-    #     cur.execute(
-    #         "INSERT OR IGNORE INTO empresas_convenio (nombre) VALUES ('Empresa Prueba S.A');"
-    #     )
-    #     cur.execute("SELECT id FROM empresas_convenio WHERE nombre = 'Empresa Prueba S.A' LIMIT 1;")
-    #     emp_id = cur.fetchone()[0]
-
-    #     # Servicios de prueba
-    #     # Particular
-    #     cur.execute(
-    #         """
-    #         INSERT OR IGNORE INTO servicios (nombre, modalidad, precio, empresa, activo)
-    #         VALUES ('Atención Psicológica', 'particular', 110000, NULL, 1);
-    #         """
-    #     )
-    #     # Convenio (empresa por nombre)
-    #     cur.execute(
-    #         """
-    #         INSERT OR IGNORE INTO servicios (nombre, modalidad, precio, empresa, activo)
-    #         VALUES ('Atención Convenio', 'convenio', 85000, 'Empresa Prueba S.A', 1);
-    #         """
-    #     )
-
-    #     # Paciente de prueba
-    #     cur.execute(
-    #         """
-    #         INSERT OR IGNORE INTO pacientes (
-    #         documento, 
-    #         tipo_documento, 
-    #         nombre_completo, 
-    #         fecha_nacimiento, 
-    #         sexo, 
-    #         estado_civil, 
-    #         escolaridad,
-    #         eps,
-    #         direccion, 
-    #         email,
-    #         indicativo_pais, 
-    #         telefono,
-    #         contacto_emergencia_nombre, 
-    #         contacto_emergencia_telefono,
-    #         observaciones 
-    #         )
-    #         VALUES ('1212121', 'CC', 'Pruebin Pruebas', '1990-01-01', 'M', 'Unión Libre', 'Pendejo', 'Sura', 'Calle falsa', 'lejozapata@gmail.com', '57', '3217769952', '', '', '');
-    #         """
-    #     )
-
-    #     conn.commit()
-    #     conn.close()
-    #     print("Datos de prueba insertados.")
-    # except Exception as e:
-    #     print(f"No se pudieron insertar datos de prueba: {e}")
