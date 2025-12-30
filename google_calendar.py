@@ -173,6 +173,9 @@ def delete_google_mapping(cita_id: int):
     )
     conn.commit()
     conn.close()
+    
+def _is_virtual(cita: dict) -> bool:
+    return (cita.get("canal") or "").strip().lower() == "virtual"
 
 # ================= SYNC CITAS =================
 
@@ -237,6 +240,7 @@ def sync_cita_to_google(cita: dict, calendar_id: str):
         },
         "colorId": GOOGLE_COLOR_BY_ESTADO.get(estado, GOOGLE_COLOR_BY_ESTADO["reservado"]),
     }
+    
 
     new_hash = hash_event({
         # hash basado en campos que definen el evento
@@ -246,7 +250,17 @@ def sync_cita_to_google(cita: dict, calendar_id: str):
         "end": event_body["end"]["dateTime"],
         "colorId": event_body["colorId"],
         "calendar_id": calendar_id,
+        "canal": canal,
     })
+    
+    # ✅ SOLO si es virtual: pedimos Meet (esto sirve para INSERT y para UPDATE cuando haga falta)
+    if _is_virtual(cita):
+        event_body["conferenceData"] = {
+            "createRequest": {
+                "requestId": f"meet-{cita_id}-{new_hash[:12]}",  # único y estable
+                "conferenceSolutionKey": {"type": "hangoutsMeet"},
+            }
+        }
 
     mapping = get_google_mapping(cita_id)
 
@@ -260,11 +274,34 @@ def sync_cita_to_google(cita: dict, calendar_id: str):
         if last_hash == new_hash:
             return
 
-        service.events().update(
-            calendarId=calendar_id,
-            eventId=event_id,
-            body=event_body,
-        ).execute()
+        # --- traer evento actual para poder QUITAR meet si cambió a presencial ---
+        current = service.events().get(calendarId=calendar_id, eventId=event_id).execute()
+
+        # ✅ Si ahora NO es virtual, quitamos conferenceData (así no queda Meet)
+        if not _is_virtual(cita):
+            event_body.pop("conferenceData", None)     # no pedimos meet
+            current.pop("conferenceData", None)        # quitamos meet existente
+            # preservamos otros campos del evento actual y aplicamos nuestra actualización
+            current.update(event_body)
+
+            service.events().update(
+                calendarId=calendar_id,
+                eventId=event_id,
+                body=current,
+                conferenceDataVersion=1,
+            ).execute()
+
+        else:
+            # ✅ Es virtual: si YA tenía meet, NO mandes createRequest (evita errores)
+            if (current.get("hangoutLink") or "").strip():
+                event_body.pop("conferenceData", None)
+
+            service.events().update(
+                calendarId=calendar_id,
+                eventId=event_id,
+                body=event_body,
+                conferenceDataVersion=1,
+            ).execute()
 
         # Guardamos hash nuevo (event_id se mantiene)
         save_google_mapping(
@@ -280,7 +317,8 @@ def sync_cita_to_google(cita: dict, calendar_id: str):
     # =========================
     created = service.events().insert(
         calendarId=calendar_id,
-        body=event_body
+        body=event_body,
+        conferenceDataVersion=1,  # ✅ necesario para que Google cree Meet
     ).execute()
 
     event_id = created.get("id")
@@ -405,6 +443,9 @@ def sync_bloqueo_to_google(bloqueo: dict, calendar_id: str):
         "end": event_body["end"]["dateTime"],
         "colorId": event_body["colorId"],
         "calendar_id": calendar_id,
+        "canal": event_body.get("extendedProperties", {})
+                 .get("private", {})
+                 .get("canal", "")
     })
 
     mapping = get_bloqueo_mapping(bloqueo_id)
