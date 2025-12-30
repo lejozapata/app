@@ -109,6 +109,40 @@ def build_citas_tabla_view(
 
         rows = listar_citas_con_paciente_rango(fecha_inicio, fecha_fin)
         estado["rows_raw"] = [dict(r) for r in rows]
+        
+        # ✅ Marcar si la cita ya tiene sesión clínica
+        try:
+            cita_ids = [int(r.get("id")) for r in estado["rows_raw"] if r.get("id") is not None]
+            cita_ids = sorted(set(cita_ids))
+
+            sesiones_set = set()
+            if cita_ids:
+                import sqlite3
+                from .db import DB_PATH  # si lo tienes expuesto; si no, usa tu get_connection()
+
+                conn = sqlite3.connect(DB_PATH)
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+                qmarks = ",".join(["?"] * len(cita_ids))
+                cur.execute(
+                    f"SELECT cita_id FROM sesiones_clinicas WHERE cita_id IN ({qmarks});",
+                    tuple(cita_ids),
+                )
+                for rr in cur.fetchall():
+                    try:
+                        sesiones_set.add(int(rr["cita_id"]))
+                    except Exception:
+                        pass
+                conn.close()
+
+            for r in estado["rows_raw"]:
+                try:
+                    r["tiene_sesion"] = int(r.get("id")) in sesiones_set
+                except Exception:
+                    r["tiene_sesion"] = False
+        except Exception:
+            for r in estado["rows_raw"]:
+                r["tiene_sesion"] = False
 
     def _aplicar_filtro(rows: list[dict]) -> list[dict]:
         q = (txt_filtro.value or "").strip().lower()
@@ -189,6 +223,7 @@ def build_citas_tabla_view(
 
     def _build_table(rows: list[dict]) -> ft.Control:
         cols = [
+            ft.DataColumn(ft.Text("HC")),
             ft.DataColumn(ft.Text("Fecha")),
             ft.DataColumn(ft.Text("Hora")),
             ft.DataColumn(ft.Text("Paciente")),
@@ -213,6 +248,15 @@ def build_citas_tabla_view(
             estado_txt = (r.get("estado") or "")
             #Pagado
             modalidad_l = (r.get("modalidad") or "").lower()
+            
+            # Ícono de sesión clínica
+            tiene = bool(r.get("tiene_sesion"))
+            hc_icon = ft.Icon(
+                ft.Icons.CHECK_CIRCLE if tiene else ft.Icons.RADIO_BUTTON_UNCHECKED,
+                tooltip="Tiene sesión clínica" if tiene else "Sin sesión clínica",
+                color=ft.Colors.GREEN_600 if tiene else ft.Colors.GREY_400,
+                size=18,
+            )
 
             if modalidad_l == "convenio":
                 pagado_cell = ft.Row(
@@ -245,6 +289,7 @@ def build_citas_tabla_view(
             data_rows.append(
                 ft.DataRow(
                     cells=[
+                        ft.DataCell(hc_icon),
                         ft.DataCell(ft.Text(fecha)),
                         ft.DataCell(ft.Text(hora)),
                         ft.DataCell(ft.Text(paciente)),
