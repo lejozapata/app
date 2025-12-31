@@ -1,7 +1,7 @@
 import flet as ft
 from datetime import date, datetime, timedelta
 
-from .db import listar_citas_con_paciente_rango, eliminar_cita
+from .db import listar_citas_con_paciente_rango, eliminar_cita, get_connection
 
 
 def _month_start(d: date) -> date:
@@ -110,18 +110,14 @@ def build_citas_tabla_view(
         rows = listar_citas_con_paciente_rango(fecha_inicio, fecha_fin)
         estado["rows_raw"] = [dict(r) for r in rows]
         
-        # ✅ Marcar si la cita ya tiene sesión clínica
+        # ✅ Marcar si la cita ya tiene sesión clínica (y cuál sesión)
         try:
             cita_ids = [int(r.get("id")) for r in estado["rows_raw"] if r.get("id") is not None]
             cita_ids = sorted(set(cita_ids))
 
             sesiones_set = set()
             if cita_ids:
-                import sqlite3
-                from .db import DB_PATH  # si lo tienes expuesto; si no, usa tu get_connection()
-
-                conn = sqlite3.connect(DB_PATH)
-                conn.row_factory = sqlite3.Row
+                conn = get_connection()
                 cur = conn.cursor()
                 qmarks = ",".join(["?"] * len(cita_ids))
                 cur.execute(
@@ -130,7 +126,9 @@ def build_citas_tabla_view(
                 )
                 for rr in cur.fetchall():
                     try:
-                        sesiones_set.add(int(rr["cita_id"]))
+                        # rr puede ser Row o tuple según tu conexión -> cubrir ambos
+                        cid = rr["cita_id"] if hasattr(rr, "keys") else rr[0]
+                        sesiones_set.add(int(cid))
                     except Exception:
                         pass
                 conn.close()
@@ -140,9 +138,11 @@ def build_citas_tabla_view(
                     r["tiene_sesion"] = int(r.get("id")) in sesiones_set
                 except Exception:
                     r["tiene_sesion"] = False
+
         except Exception:
             for r in estado["rows_raw"]:
                 r["tiene_sesion"] = False
+
 
     def _aplicar_filtro(rows: list[dict]) -> list[dict]:
         q = (txt_filtro.value or "").strip().lower()
@@ -220,6 +220,75 @@ def build_citas_tabla_view(
     def _cerrar_confirm(d: ft.AlertDialog):
         d.open = False
         page.update()
+        
+    def _ir_a_historia_y_precargar_sesion(rr: dict):
+        # Guardar contexto para historia_view
+        page.session.set("historia_paciente_documento", rr.get("documento_paciente"))
+        page.session.set("historia_prefill_cita_id", int(rr.get("id")))
+
+        # Cerrar el dialog actual
+        d = dlg_holder.get("dlg")
+        if d:
+            try:
+                page.close(d)
+            except Exception:
+                d.open = False
+
+        page.update()
+
+        # Navegar a Historia
+        cb = getattr(page, "mostrar_historia_cb", None)
+        if callable(cb):
+            cb()
+        else:
+            page.snack_bar = ft.SnackBar(ft.Text("No está conectado mostrar_historia_cb"), open=True)
+            page.update()
+            
+    def _ir_a_historia_y_abrir_sesion_existente(rr: dict):
+        cita_id = rr.get("id")
+        if not cita_id:
+            return
+
+        # 1) buscar sesion_id de esa cita
+        sesion_id = None
+        try:
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id FROM sesiones_clinicas WHERE cita_id = ? ORDER BY id DESC LIMIT 1;",
+                (int(cita_id),),
+            )
+            row = cur.fetchone()
+            conn.close()
+            if row:
+                sesion_id = row["id"] if hasattr(row, "keys") else row[0]
+        except Exception:
+            sesion_id = None
+
+        if not sesion_id:
+            # si por algo no se encuentra, mejor no navegar
+            page.snack_bar = ft.SnackBar(ft.Text("No se encontró la sesión asociada a esta cita."), open=True)
+            page.update()
+            return
+
+        # 2) guardar contexto para historia_view
+        page.session.set("historia_paciente_documento", rr.get("documento_paciente"))
+        page.session.set("historia_open_sesion_id", int(sesion_id))
+
+        # 3) cerrar dialog
+        d = dlg_holder.get("dlg")
+        if d:
+            try:
+                page.close(d)
+            except Exception:
+                d.open = False
+        page.update()
+
+        # 4) navegar a historia
+        cb = getattr(page, "mostrar_historia_cb", None)
+        if callable(cb):
+            cb()
+
 
     def _build_table(rows: list[dict]) -> ft.Control:
         cols = [
@@ -251,13 +320,15 @@ def build_citas_tabla_view(
             
             # Ícono de sesión clínica
             tiene = bool(r.get("tiene_sesion"))
-            hc_icon = ft.Icon(
-                ft.Icons.CHECK_CIRCLE if tiene else ft.Icons.RADIO_BUTTON_UNCHECKED,
-                tooltip="Tiene sesión clínica" if tiene else "Sin sesión clínica",
-                color=ft.Colors.GREEN_600 if tiene else ft.Colors.GREY_400,
-                size=18,
-            )
 
+            hc_icon = ft.IconButton(
+                icon=ft.Icons.CHECK_CIRCLE if tiene else ft.Icons.RADIO_BUTTON_UNCHECKED,
+                tooltip="Ver/editar sesión clínica" if tiene else "Sin sesión clínica",
+                icon_color=ft.Colors.GREEN_600 if tiene else ft.Colors.GREY_400,
+                on_click=(lambda e, rr=r: _ir_a_historia_y_abrir_sesion_existente(rr)) if tiene else None,
+                disabled=not tiene,
+            )
+                
             if modalidad_l == "convenio":
                 pagado_cell = ft.Row(
                     [
@@ -280,11 +351,34 @@ def build_citas_tabla_view(
                 tooltip="Editar",
                 on_click=lambda e, rr=r: _accion_editar(rr),
             )
+            
+            btn_crear_sesion = ft.IconButton(
+                icon=ft.Icons.NOTE_ADD_OUTLINED,
+                tooltip="Crear sesión clínica para esta cita",
+                on_click=lambda e, rr=r: _ir_a_historia_y_precargar_sesion(rr),
+            )
+            
             # btn_cancel = ft.IconButton(
             #     icon=ft.Icons.DELETE_OUTLINE,
             #     tooltip="Cancelar / borrar",
             #     on_click=lambda e, rr=r: _accion_cancelar(rr),
             # )
+            acciones = [btn_edit]
+
+            tiene_sesion = bool(r.get("tiene_sesion"))
+            estado_cita = (r.get("estado") or "").strip().lower()
+
+            dt = _parse_fecha_hora(r.get("fecha_hora"))
+            ya_ocurrio = bool(dt) and (dt <= datetime.now())
+
+            es_no_asistio = estado_cita in {"no asistió", "no asistio", "no_asistio", "no-asistio"}
+
+            # Mostrar "Crear sesión" SOLO si:
+            #  - no tiene sesión aún
+            #  - ya ocurrió la cita
+            #  - NO es "NO ASISTIÓ"
+            if (not tiene_sesion) and ya_ocurrio and (not es_no_asistio):
+                acciones.insert(0, btn_crear_sesion)
 
             data_rows.append(
                 ft.DataRow(
@@ -298,10 +392,7 @@ def build_citas_tabla_view(
                         ft.DataCell(ft.Text(valor)),
                         ft.DataCell(ft.Text(estado_txt)),
                         ft.DataCell(pagado_cell),
-                        ft.DataCell(ft.Row([btn_edit, 
-                                            #btn_cancel
-                                            ], 
-                                           spacing=0)),
+                        ft.DataCell(ft.Row(acciones, spacing=0)),
                     ]
                 )
             )

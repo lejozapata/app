@@ -2,6 +2,7 @@ import os
 import smtplib
 import threading
 import asyncio
+import sqlite3
 from email.message import EmailMessage
 from datetime import date, datetime, timedelta, time as dt_time
 import time as pytime
@@ -49,6 +50,9 @@ from .db import (
     obtener_configuracion_gmail,
     existe_bloqueo_por_id,
     existe_cita_por_id,
+    obtener_sesion_id_por_cita,  
+    cita_tiene_sesion,
+    get_connection,
 )
 
 
@@ -1185,19 +1189,104 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
         cita_id = cita_editando_id["value"]
 
         if cita_id is not None:
-            
-        # ----------------- DEVOLVER PAQUETE SI ERA PRESENCIAL -----------------
+
+            # ------------------------------------------------------------
+            # B2 Plus: si la cita tiene sesión clínica asociada, NO borrar.
+            # Ofrecer abrir la sesión clínica.
+            # ------------------------------------------------------------
+            sesion_id = None
+            try:
+                sesion_id = obtener_sesion_id_por_cita(int(cita_id))
+            except Exception:
+                sesion_id = None
+
+            if sesion_id:
+
+                def _abrir_sesion(_e=None):
+                    # obtener documento del paciente de esa cita
+                    try:
+                        conn = get_connection()
+                        conn.row_factory = sqlite3.Row
+                        cur = conn.cursor()
+                        cur.execute(
+                            "SELECT documento_paciente FROM citas WHERE id = ? LIMIT 1;",
+                            (int(cita_id),),
+                        )
+                        row = cur.fetchone()
+                        conn.close()
+                        documento = row["documento_paciente"] if row else None
+                    except Exception:
+                        documento = None
+
+                    if not documento:
+                        page.snack_bar = ft.SnackBar(
+                            content=ft.Text("No se pudo abrir la sesión: falta documento del paciente."),
+                            bgcolor=ft.Colors.RED_300,
+                        )
+                        page.snack_bar.open = True
+                        page.update()
+                        return
+
+                    # guardar contexto para historia_view
+                    page.session.set("historia_paciente_documento", documento)
+                    page.session.set("historia_open_sesion_id", int(sesion_id))
+
+                    # cerrar diálogo de reserva/cancelación si está abierto
+                    try:
+                        page.close(dialogo_reserva)
+                    except Exception:
+                        dialogo_reserva.open = False
+
+                    page.update()
+
+                    # navegar a Historia
+                    cb = getattr(page, "mostrar_historia_cb", None)
+                    if callable(cb):
+                        cb()
+                    else:
+                        page.snack_bar = ft.SnackBar(
+                            content=ft.Text("No está conectado mostrar_historia_cb."),
+                            bgcolor=ft.Colors.RED_300,
+                        )
+                        page.snack_bar.open = True
+                        page.update()
+
+                    # cerrar el dialog B2 plus
+                    try:
+                        page.close(dlg_b2)
+                    except Exception:
+                        dlg_b2.open = False
+                    page.update()
+
+                dlg_b2 = ft.AlertDialog(
+                    modal=True,
+                    title=ft.Text("No se puede cancelar borrando esta cita"),
+                    content=ft.Text(
+                        "Esta cita ya tiene una sesión clínica asociada.\n\n"
+                        "Por auditoría, no se permite eliminar la cita mientras tenga registro en historia clínica."
+                    ),
+                    actions=[
+                        ft.ElevatedButton("Abrir sesión clínica", on_click=_abrir_sesion),
+                        ft.TextButton("Cerrar", on_click=lambda e: page.close(dlg_b2)),
+                    ],
+                )
+                page.open(dlg_b2)
+                page.update()
+                return  # 👈 importantísimo: NO seguir con borrado
+
+            # ----------------- DEVOLVER PAQUETE SI ERA PRESENCIAL -----------------
             try:
                 cita_row = cita_editando_row["value"]
                 if cita_row and cita_row.get("canal") == "presencial":
                     devolver_cita_paquete_arriendo(cita_id)
             except Exception as ex:
                 print(f"[WARN] No se pudo devolver cita del paquete: {ex}")
-                
+
             # Sincronizar eliminación en Google Calendar
             try:
                 calendar_id = get_google_calendar_id()
                 if calendar_id:
+
                     def tarea_delete_google():
                         try:
                             delete_cita_from_google(cita_id, calendar_id)
@@ -1207,7 +1296,8 @@ def build_agenda_view(page: ft.Page) -> ft.Control:
                     threading.Thread(target=tarea_delete_google, daemon=True).start()
             except Exception as e:
                 print("⚠️ Error preparando delete Google (cita):", e)
-                
+
+            # ✅ borrar cita (solo si NO tiene sesión)
             eliminar_cita(cita_id)
 
             # Enviar correo de cancelación si el usuario lo pidió

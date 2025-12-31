@@ -45,6 +45,15 @@ def build_historia_view(page: ft.Page) -> ft.Control:
     historia_actual: Dict[str, Any] = {"id": None}
     sesion_editando: Dict[str, Any] = {"id": None}
     
+    #Helper para parsear fecha y hora
+    def _parse_fecha_hora(v):
+        try:
+            if not v:
+                return None
+            return datetime.fromisoformat(str(v).replace("Z", ""))
+        except Exception:
+            return None
+    
     
     # helper para verificar si ya existe sesión vinculada a una cita
     def existe_sesion_para_cita(cita_id: int, excluir_sesion_id: int | None = None) -> bool:
@@ -784,6 +793,14 @@ def build_historia_view(page: ft.Page) -> ft.Control:
         label="Vincular con cita agendada",
         value=False,
     )
+    
+    lbl_info_citas = ft.Text(
+        "",
+        size=12,
+        color=ft.Colors.GREY_600,
+        italic=True,
+        visible=False,   # 👈 empieza oculto
+    )
 
     dd_citas = ft.Dropdown(
         label="Seleccionar cita",
@@ -797,11 +814,23 @@ def build_historia_view(page: ft.Page) -> ft.Control:
     )
     
     def _on_toggle_vincular(e):
-        dd_citas.visible = switch_vincular_cita.value
-        if switch_vincular_cita.value:
+        on = bool(switch_vincular_cita.value)
+
+        dd_citas.visible = on
+        lbl_info_citas.visible = on
+
+        if on:
             cargar_citas_paciente()
+        else:
+            # limpiar cuando se apaga
+            dd_citas.value = None
+            dd_citas.options.clear()
+            lbl_info_citas.value = ""
+
         if dd_citas.page:
             dd_citas.update()
+        if lbl_info_citas.page:
+            lbl_info_citas.update()
 
     switch_vincular_cita.on_change = _on_toggle_vincular
 
@@ -1024,6 +1053,22 @@ def build_historia_view(page: ft.Page) -> ft.Control:
         for r in citas or []:
             c = dict(r)
             cita_id = c.get("id")
+            
+            # --- reglas de elegibilidad para vincular sesión ---
+            dt = _parse_fecha_hora(c.get("fecha_hora"))
+            ya_ocurrio = bool(dt) and (dt <= datetime.now())
+
+            estado_cita = (c.get("estado") or "").strip().lower()
+            es_no_asistio = estado_cita in {"no asistió", "no asistio", "no_asistio", "no-asistio", "no_asistió"}
+
+            # Si no ocurrió aún, NO se muestra
+            if not ya_ocurrio:
+                continue
+
+            # Si es NO ASISTIÓ, NO se muestra
+            if es_no_asistio:
+                continue
+            
             if not cita_id:
                 continue
 
@@ -1035,6 +1080,8 @@ def build_historia_view(page: ft.Page) -> ft.Control:
             label_base = " · ".join(x for x in [str(fecha), canal] if str(x).strip())
 
             ya_tiene = int(cita_id) in citas_con_sesion
+            if ya_tiene:
+                continue  # ✅ NO la muestres (evita duplicar)
 
             # ✅ Marca visual
             label = f"✅ {label_base}" if ya_tiene else label_base
@@ -1048,7 +1095,16 @@ def build_historia_view(page: ft.Page) -> ft.Control:
             except Exception:
                 pass
 
-            dd_citas.options.append(opt)
+            dd_citas.options.append(ft.dropdown.Option(key=str(cita_id), text=label_base))
+            
+            # actualizar mensaje/label informativo
+            if lbl_info_citas:
+                if dd_citas.options:
+                    lbl_info_citas.value = "Solo se muestran citas atendidas y sin sesión clínica asociada."
+                else:
+                    lbl_info_citas.value = "No hay citas disponibles para crear una sesión."
+                if lbl_info_citas.page:
+                    lbl_info_citas.update()
 
         if dd_citas.page:
             dd_citas.update()
@@ -1280,6 +1336,7 @@ def build_historia_view(page: ft.Page) -> ft.Control:
 
             # ✅ NUEVO: Switch + selector de citas (el DD se oculta solo si switch OFF)
             switch_vincular_cita,
+            lbl_info_citas,
             dd_citas,
 
             # Resto del formulario
@@ -1578,12 +1635,76 @@ def build_historia_view(page: ft.Page) -> ft.Control:
                 delattr(page, "historia_paciente_documento")
             except Exception:
                 pass
+            
+   # Prefill cita_id (venir desde Resumen de Citas)
+    pre_cita_id = None
+    try:
+        pre_cita_id = page.session.get("historia_prefill_cita_id")
+    except Exception:
+        pre_cita_id = getattr(page, "historia_prefill_cita_id", None)
 
+    if pre_cita_id:
+        cambiar_seccion("sesiones")
+
+        switch_vincular_cita.value = True
+        dd_citas.visible = True
+
+        cargar_citas_paciente()
+
+        cid = str(pre_cita_id)
+        if any(opt.key == cid for opt in dd_citas.options):
+            dd_citas.value = cid
+            _on_cita_selected(None)
+
+        # limpiar
+        try:
+            page.session.remove("historia_prefill_cita_id")
+        except Exception:
+            try:
+                delattr(page, "historia_prefill_cita_id")
+            except Exception:
+                pass
+
+    # -------------------------------------------------------
+    # Prefill: abrir sesión existente (click en el check HC)
+    # -------------------------------------------------------
+    open_sesion_id = None
+    try:
+        open_sesion_id = page.session.get("historia_open_sesion_id")
+    except Exception:
+        open_sesion_id = getattr(page, "historia_open_sesion_id", None)
+
+    if open_sesion_id:
+        cambiar_seccion("sesiones")
+
+        try:
+            conn = get_connection()
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM sesiones_clinicas WHERE id = ? LIMIT 1;", (int(open_sesion_id),))
+            row_s = cur.fetchone()
+            conn.close()
+
+            if row_s:
+                cargar_sesion_en_form(row_s)
+        except Exception:
+            pass
+
+        # limpiar
+        try:
+            page.session.remove("historia_open_sesion_id")
+        except Exception:
+            try:
+                delattr(page, "historia_open_sesion_id")
+            except Exception:
+                pass
+            
     contenido_derecha_scroll_x = ft.Row(
         [contenido_derecha],
         scroll=ft.ScrollMode.AUTO,   # <-- scroll horizontal
         expand=True,
     )
+
 
     raiz = ft.Row(
         [
@@ -1594,5 +1715,5 @@ def build_historia_view(page: ft.Page) -> ft.Control:
         expand=True,
         vertical_alignment=ft.CrossAxisAlignment.START,
     )
-
+    
     return raiz

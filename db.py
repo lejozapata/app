@@ -1090,6 +1090,23 @@ def eliminar_sesion_clinica(sesion_id: int) -> None:
     cur.execute("DELETE FROM sesiones_clinicas WHERE id = ?;", (sesion_id,))
     conn.commit()
     conn.close()
+    
+def obtener_sesion_id_por_cita(cita_id: int) -> int | None:
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id FROM sesiones_clinicas WHERE cita_id = ? ORDER BY id DESC LIMIT 1;",
+        (cita_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return int(row["id"])
+
+def cita_tiene_sesion(cita_id: int) -> bool:
+    return obtener_sesion_id_por_cita(cita_id) is not None
 
 
 # ===================== C I T A S =====================
