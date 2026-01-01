@@ -219,6 +219,11 @@ def init_db() -> None:
     cols = [row[1] for row in cur.fetchall()]
     if "google_calendar_id" not in cols:
         cur.execute("ALTER TABLE configuracion_gmail ADD COLUMN google_calendar_id TEXT;")
+        
+    cur.execute("PRAGMA table_info(configuracion_gmail);")
+    cols = [row[1] for row in cur.fetchall()]
+    if "google_forms_id" not in cols:
+        cur.execute("ALTER TABLE configuracion_gmail ADD COLUMN google_forms_id TEXT;")
     
     # ✅ NUEVO: switch calendar
     if "google_calendar_habilitado" not in cols:
@@ -3579,13 +3584,17 @@ def obtener_configuracion_gmail() -> dict:
 
     cfg = {
         "gmail_user": row["gmail_user"],
-        "gmail_app_password": row["gmail_app_password"],  # OJO: cifrado (enc::...) o plano legacy
+        "gmail_app_password": row["gmail_app_password"],
         "habilitado": bool(row["habilitado"]),
         "tiene_password": bool(row["gmail_app_password"]),
+
         "google_calendar_id": row["google_calendar_id"] if "google_calendar_id" in row.keys() else None,
         "google_calendar_habilitado": bool(row["google_calendar_habilitado"])
         if "google_calendar_habilitado" in row.keys()
         else False,
+
+        # ✅ NUEVO
+        "google_forms_id": row["google_forms_id"] if "google_forms_id" in row.keys() else None,
     }
 
     conn.close()
@@ -3593,13 +3602,6 @@ def obtener_configuracion_gmail() -> dict:
 
 
 def guardar_configuracion_gmail(cfg: dict) -> None:
-    """
-    Guarda la configuración de Gmail (siempre id=1).
-    - gmail_user: correo gmail
-    - gmail_app_password: clave de aplicación (se guarda cifrada).
-      Si viene vacío/None, se conserva la clave existente.
-    - habilitado: bool (si no viene, se habilita solo si hay user+password)
-    """
     conn = get_connection()
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
@@ -3609,9 +3611,12 @@ def guardar_configuracion_gmail(cfg: dict) -> None:
 
     gmail_user = (cfg.get("gmail_user") or "").strip() or None
     new_password = (cfg.get("gmail_app_password") or "").strip() or None
+
     google_calendar_id = (cfg.get("google_calendar_id") or "").strip() or None
-    google_calendar_habilitado = cfg.get("google_calendar_habilitado")
-    google_calendar_habilitado = 1 if bool(google_calendar_habilitado) else 0
+    google_calendar_habilitado = 1 if bool(cfg.get("google_calendar_habilitado")) else 0
+
+    # ✅ NUEVO
+    google_forms_id = (cfg.get("google_forms_id") or "").strip() or None
 
     # Si el usuario no escribió una nueva, preservamos la existente
     if not new_password and actual is not None:
@@ -3629,12 +3634,24 @@ def guardar_configuracion_gmail(cfg: dict) -> None:
         habilitado = 1 if bool(habilitado) else 0
 
     if actual is None:
+        # ✅ IMPORTANTE: aquí estaba el bug (faltaban bindings)
         cur.execute(
             """
-            INSERT INTO configuracion_gmail (id, gmail_user, gmail_app_password, habilitado, google_calendar_id, google_calendar_habilitado)
-            VALUES (1, ?, ?, ?, ?, ?);
+            INSERT INTO configuracion_gmail (
+                id, gmail_user, gmail_app_password, habilitado,
+                google_calendar_id, google_calendar_habilitado,
+                google_forms_id
+            )
+            VALUES (1, ?, ?, ?, ?, ?, ?);
             """,
-            (gmail_user, new_password, habilitado, google_calendar_id),
+            (
+                gmail_user,
+                new_password,
+                habilitado,
+                google_calendar_id,
+                google_calendar_habilitado,
+                google_forms_id,
+            ),
         )
     else:
         cur.execute(
@@ -3644,10 +3661,18 @@ def guardar_configuracion_gmail(cfg: dict) -> None:
                 gmail_app_password = ?,
                 habilitado = ?,
                 google_calendar_id = ?,
-                google_calendar_habilitado = ?
+                google_calendar_habilitado = ?,
+                google_forms_id = ?
             WHERE id = 1;
             """,
-            (gmail_user, new_password, habilitado, google_calendar_id, google_calendar_habilitado),
+            (
+                gmail_user,
+                new_password,
+                habilitado,
+                google_calendar_id,
+                google_calendar_habilitado,
+                google_forms_id,
+            ),
         )
 
     conn.commit()

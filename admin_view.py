@@ -190,6 +190,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
     # =====================================================================
     #                  CONTROLES (MOVIDOS) - CONFIGURACIÓN
     # =====================================================================
+
     
     ##### Helpers para Abrir URLs de ayuda #####
     
@@ -215,7 +216,7 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         icon=ft.Icons.INFO_OUTLINE,
         icon_color=ft.Colors.BLUE_600,
         icon_size=18,
-        tooltip="Credenciales API CIE11",
+        tooltip="Clave de aplicación en Gmail",
         on_click=abrir_sitio_gmail
     )
 
@@ -259,8 +260,110 @@ def build_admin_view(page: ft.Page) -> ft.Control:
         label="Habilitar sincronización con Google Calendar",
         value=bool(cfg_gmail.get("google_calendar_habilitado")),
     )
+    
+    # ------- Google Forms ID --------
+
+    txt_google_forms_id = ft.TextField(
+        label="Google Forms ID",
+        value=(cfg_gmail.get("google_forms_id") or ""),
+        width=720,
+        helper_text="Pega el ID del formulario (https://docs.google.com/forms/d/[ID]/).",
+    )
+
+    btn_guardar_forms = ft.FilledButton(
+        "Guardar Forms",
+        icon=ft.Icons.SAVE,
+    )
+
+    btn_probar_forms = ft.OutlinedButton(
+        "Probar",
+        icon=ft.Icons.CHECK_CIRCLE_OUTLINED,
+        tooltip="Valida que el ID exista y que la app tenga permisos",
+    )
+
+    btn_reset_sync = ft.OutlinedButton(
+        "Reset Sync",
+        icon=ft.Icons.RESTART_ALT,
+        tooltip="Borra el estado local de sincronización (solo pruebas)",
+    )
+
+    # Mensajito local en Config (si no quieres usar SnackBar aquí)
+    lbl_forms_status = ft.Text("", size=12, color=ft.Colors.GREY_700)
+    
+    # ===================== HANDLERS GOOGLE FORMS (FUERA de guardar_integraciones) =====================
+
+    def _set_forms_status(msg: str, color):
+        lbl_forms_status.value = msg
+        lbl_forms_status.color = color
+        page.update()
+
+    def on_guardar_forms(e=None):
+        try:
+            # Reusa el guardado general (Gmail + Calendar + Forms + CIE11)
+            guardar_integraciones()
+            _set_forms_status("✅ Google Forms ID guardado.", ft.Colors.GREEN_700)
+        except Exception as ex:
+            _set_forms_status(f"❌ Error guardando: {ex}", ft.Colors.RED_700)
+
+    def on_probar_forms(e=None):
+        form_id = (txt_google_forms_id.value or "").strip()
+        if not form_id:
+            _set_forms_status("⚠️ Ingresa un Google Forms ID primero.", ft.Colors.ORANGE_700)
+            return
+
+        _set_forms_status("Probando acceso al formulario...", ft.Colors.BLUE_700)
+
+        def tarea():
+            try:
+                from .google_forms import get_forms_service
+                service = get_forms_service()
+                service.forms().get(formId=form_id).execute()
+
+                async def _ok():
+                    _set_forms_status("✅ Formulario accesible y con permisos.", ft.Colors.GREEN_700)
+
+                page.run_task(_ok)
+
+            except Exception as ex:
+                err_msg = str(ex)  # ✅ capturar aquí
+
+                async def _err():
+                    _set_forms_status(f"❌ No se pudo acceder: {err_msg}", ft.Colors.RED_700)
+
+                page.run_task(_err)
+
+        page.run_thread(tarea)
+
+    def on_reset_sync(e=None):
+        _set_forms_status("Reseteando estado de sync...", ft.Colors.BLUE_700)
+
+        def tarea():
+            try:
+                from .google_forms import reset_forms_sync_state
+                reset_forms_sync_state()
+
+                async def _ok():
+                    _set_forms_status("✅ Estado de sync reiniciado.", ft.Colors.GREEN_700)
+
+                page.run_task(_ok)
+
+            except Exception as ex:
+                err_msg = str(ex)
+
+                async def _err():
+                    _set_forms_status(f"❌ Error reseteando: {err_msg}", ft.Colors.RED_700)
+
+                page.run_task(_err)
+
+        page.run_thread(tarea)
 
 
+    # Conectar botones (esto es lo que te faltaba)
+    btn_guardar_forms.on_click = on_guardar_forms
+    btn_probar_forms.on_click = on_probar_forms
+    btn_reset_sync.on_click = on_reset_sync
+    
+    
     # -------- CIE-11 (ICD-11) --------
 
     RELEASES_CIE11 = [
@@ -691,8 +794,13 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             "habilitado": bool(sw_habilitar_email.value),
             "google_calendar_id": (txt_google_calendar_id.value or "").strip(),
             "google_calendar_habilitado": bool(sw_habilitar_google_calendar.value),
+            "google_forms_id": (txt_google_forms_id.value or "").strip() or None,
         }
         guardar_configuracion_gmail(cfg_gmail_guardar)
+        
+        # ---- Configuración Google Forms ----
+   
+        
 
         # ---- Configuración CIE-11 ----
         cfg_cie11_save = {
@@ -746,6 +854,19 @@ def build_admin_view(page: ft.Page) -> ft.Control:
             ),
             txt_google_calendar_id,
             ft.Row([sw_habilitar_google_calendar], spacing=10),
+
+            ft.Divider(),
+            
+            # ############# Google Forms #############
+            ft.Text("Integración Google Forms", weight="bold"),
+            ft.Text(
+                "Configura el ID del formulario para importar pacientes desde Google Forms.",
+                size=12,
+                color=ft.Colors.GREY_700,
+            ),
+            txt_google_forms_id,
+            ft.Row([btn_guardar_forms, btn_probar_forms, btn_reset_sync], spacing=10),
+            lbl_forms_status,
 
             ft.Divider(),
             
