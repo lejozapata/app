@@ -16,6 +16,7 @@ from .db import (
     guardar_empresa_convenio,
     actualizar_estado_factura_convenio,
     obtener_configuracion_facturacion,
+    eliminar_empresa_convenio,  # <- debe retornar (bool, msg)
 )
 
 
@@ -225,10 +226,6 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
         items_controls.append({"desc": desc_tf, "cant": cant_tf, "vu": vu_tf})
         items_column.controls.append(row)
 
-    def _ensure_first_item():
-        if not items_controls:
-            _add_item()
-
     # --- Prefill cuando venimos desde la agenda (facturar convenio) ---
     prefill = None
     try:
@@ -245,7 +242,7 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
             ft.DataColumn(ft.Text("Número")),
             ft.DataColumn(ft.Text("Fecha")),
             ft.DataColumn(ft.Text("Empresa")),
-            ft.DataColumn(ft.Text("Paciente")),
+            # ft.DataColumn(ft.Text("Paciente")),
             ft.DataColumn(ft.Text("Total")),
             ft.DataColumn(ft.Text("Estado")),
             ft.DataColumn(ft.Text("Acciones")),
@@ -298,7 +295,6 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
             numero = f["numero"]
             fecha_f = f["fecha"]
             empresa = f.get("empresa_nombre") or ""
-            paciente = f.get("paciente_nombre") or ""
             total = f.get("total", 0)
             estado = f.get("estado") or ""
 
@@ -349,12 +345,6 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
                             ft.Container(
                                 width=240,
                                 content=ft.Text(empresa, no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS),
-                            )
-                        ),
-                        ft.DataCell(
-                            ft.Container(
-                                width=220,
-                                content=ft.Text(paciente, no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS),
                             )
                         ),
                         ft.DataCell(ft.Text(total_txt)),
@@ -510,7 +500,6 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
     )
 
     # --------- PREFILL (DESPUÉS de tener controls listos) ----------
-    # _ensure_first_item()  # ya se inicializa al final con 1 ítem
     if isinstance(prefill, dict):
         # 1) Empresa (por nombre exacto)
         nombre_emp = (prefill.get("empresa_nombre") or "").strip()
@@ -529,7 +518,7 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
         if not items_controls:
             _add_item()
         first = items_controls[0]
-    
+
         precio = prefill.get("precio")
         if precio is not None:
             try:
@@ -578,7 +567,11 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
         txt_paciente_documento.value = enc.get("paciente_documento") or ""
         txt_paciente_nombre.value = enc.get("paciente_nombre") or ""
         txt_forma_pago.value = enc.get("forma_pago") or ""
-        dd_iva_porcentaje.value = str(int(enc.get("iva_porcentaje") or 0)) if enc.get("iva_porcentaje") is not None else dd_iva_porcentaje.value
+        dd_iva_porcentaje.value = (
+            str(int(enc.get("iva_porcentaje") or 0))
+            if enc.get("iva_porcentaje") is not None
+            else dd_iva_porcentaje.value
+        )
 
         # cargar ítems
         items_controls.clear()
@@ -791,11 +784,79 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
             if c.page is not None:
                 c.update()
 
+    # ---------------- Eliminación empresas (FIX) ----------------
+    dlg_confirm_borrar_empresa = ft.AlertDialog(modal=True)
+
+    def _refrescar_dropdown_empresas():
+        empresas_new = listar_empresas_convenio()  # solo activas por defecto
+        dd_empresas.options = [ft.dropdown.Option(str(x["id"]), x["nombre"]) for x in empresas_new]
+        if dd_empresas.page is not None:
+            dd_empresas.update()
+
+    def _confirmar_borrar_empresa(emp_id: int, emp_nombre: str):
+        def _hacer_borrado(_e):
+            try:
+                borrada_def, msg = eliminar_empresa_convenio(emp_id)  # <- FIX
+            except Exception as ex:
+                page.snack_bar = ft.SnackBar(content=ft.Text(f"Error al eliminar empresa: {ex}"))
+                page.snack_bar.open = True
+                page.update()
+                return
+
+            dlg_confirm_borrar_empresa.open = False
+            page.update()
+
+            # Si estaba cargada en el form, limpiamos
+            if empresa_id_sel["value"] == emp_id:
+                limpiar_form_empresa()
+
+            # refrescar tabla + dropdown
+            cargar_empresas_table()
+            _refrescar_dropdown_empresas()
+
+            page.snack_bar = ft.SnackBar(content=ft.Text(msg))
+            page.snack_bar.open = True
+            page.update()
+
+        dlg_confirm_borrar_empresa.title = ft.Text("Confirmar eliminación")
+        dlg_confirm_borrar_empresa.content = ft.Text(
+            f"¿Seguro que deseas eliminar la empresa '{emp_nombre}'?\n"
+            "Si tiene facturas, se desactivará para conservar el histórico."
+        )
+        dlg_confirm_borrar_empresa.actions = [
+            ft.TextButton(
+                "Cancelar",
+                on_click=lambda e: setattr(dlg_confirm_borrar_empresa, "open", False) or page.update(),
+            ),
+            ft.ElevatedButton("Eliminar", icon=ft.Icons.DELETE, on_click=_hacer_borrado),
+        ]
+
+        page.dialog = dlg_confirm_borrar_empresa
+        dlg_confirm_borrar_empresa.open = True
+        page.open(dlg_confirm_borrar_empresa)
+        page.update()
+
     def cargar_empresas_table():
+        # OJO: si quieres que "eliminadas/desactivadas" NO se vean acá,
+        # cambia a activa_only=True.
         empresas_full = listar_empresas_convenio(activa_only=False)
+
         empresas_table.rows.clear()
         for emp in empresas_full:
-            btn_editar = ft.TextButton("Editar", on_click=lambda e, datos=emp: cargar_empresa_en_form(datos))
+            btn_editar = ft.IconButton(
+                icon=ft.Icons.EDIT,
+                tooltip="Editar",
+                on_click=lambda e, datos=emp: cargar_empresa_en_form(datos),
+            )
+
+            btn_eliminar = ft.IconButton(
+                icon=ft.Icons.DELETE,
+                tooltip="Eliminar",
+                on_click=lambda e, eid=emp["id"], nombre=emp.get("nombre") or "": _confirmar_borrar_empresa(eid, nombre),
+            )
+
+            acciones = ft.Row([btn_editar, btn_eliminar], spacing=4)
+
             empresas_table.rows.append(
                 ft.DataRow(
                     cells=[
@@ -804,12 +865,15 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
                         ft.DataCell(ft.Text(emp.get("ciudad") or "")),
                         ft.DataCell(ft.Text(emp.get("telefono") or "")),
                         ft.DataCell(ft.Text("Sí" if emp.get("activa") else "No")),
-                        ft.DataCell(btn_editar),
+                        ft.DataCell(acciones),
                     ]
                 )
             )
+
         if empresas_table.page is not None:
             empresas_table.update()
+
+    # ===================== Guardar empresa ======================
 
     def guardar_empresa(e):
         nombre = (txt_emp_nombre.value or "").strip()
@@ -842,10 +906,7 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
         cargar_empresas_table()
 
         # Refrescar dropdown de creación de facturas
-        empresas_new = listar_empresas_convenio()
-        dd_empresas.options = [ft.dropdown.Option(str(x["id"]), x["nombre"]) for x in empresas_new]
-        if dd_empresas.page is not None:
-            dd_empresas.update()
+        _refrescar_dropdown_empresas()
 
     seccion_empresas = ft.Column(
         [
@@ -960,9 +1021,10 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
     # Inicializaciones
     items_controls.clear()
     items_column.controls.clear()
-    _add_item()          # 👈 solo una vez
+    _add_item()  # 👈 solo una vez
     _recalcular_totales()
     _cargar_facturas()
+    cargar_empresas_table()
 
     cambiar_seccion("creacion")  # ✅ esto hace que cargue la vista de creación al entrar
 
@@ -975,5 +1037,3 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
         expand=True,
         vertical_alignment=ft.CrossAxisAlignment.START,
     )
-
-

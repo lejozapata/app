@@ -1,7 +1,7 @@
 from __future__ import annotations
 import sqlite3
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from datetime import date, datetime, timedelta
 import os
 import sys
@@ -1928,6 +1928,41 @@ def guardar_empresa_convenio(datos: Dict[str, Any]) -> int:
     conn.commit()
     conn.close()
     return empresa_id
+
+
+def eliminar_empresa_convenio(empresa_id: int) -> Tuple[bool, str]:
+    """
+    Elimina una empresa de convenio.
+    - Si NO tiene facturas asociadas: hard delete (se borra).
+    - Si TIENE facturas asociadas: soft delete (activa=0) para conservar histórico.
+
+    Returns:
+      (borrada_definitivo, mensaje)
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    # ¿Tiene facturas?
+    cur.execute("SELECT COUNT(1) FROM facturas_convenio WHERE empresa_id = ?;", (empresa_id,))
+    n = int(cur.fetchone()[0] or 0)
+
+    if n > 0:
+        # Soft delete
+        cur.execute("UPDATE empresas_convenio SET activa = 0 WHERE id = ?;", (empresa_id,))
+        conn.commit()
+        conn.close()
+        return (False, f"Empresa desactivada. Tiene {n} factura(s) asociada(s), se conserva en histórico.")
+    else:
+        # Hard delete
+        try:
+            cur.execute("DELETE FROM empresas_convenio WHERE id = ?;", (empresa_id,))
+            conn.commit()
+            conn.close()
+            return (True, "Empresa eliminada definitivamente (no tenía facturas asociadas).")
+        except sqlite3.IntegrityError as ex:
+            # Por si tienes foreign_keys ON y algo más la referencia
+            conn.close()
+            return (False, f"No se pudo eliminar definitivamente por integridad referencial: {ex}")
 
 # ---------------- FACTURAS DE CONVENIO ----------------
 
