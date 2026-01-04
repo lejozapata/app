@@ -1,6 +1,6 @@
 import os
 from datetime import date
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 
 import flet as ft
 
@@ -17,6 +17,7 @@ from .db import (
     actualizar_estado_factura_convenio,
     obtener_configuracion_facturacion,
 )
+
 
 def build_facturas_view(page: ft.Page) -> ft.Control:
     page.padding = 10
@@ -40,9 +41,7 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
     dd_empresas = ft.Dropdown(
         label="Empresa del convenio",
         width=350,
-        options=[
-            ft.dropdown.Option(str(e["id"]), e["nombre"]) for e in empresas_cache
-        ],
+        options=[ft.dropdown.Option(str(e["id"]), e["nombre"]) for e in empresas_cache],
     )
 
     # --- Fecha factura ---
@@ -74,7 +73,6 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
         page.overlay.append(dp_fecha)
 
     def _abrir_datepicker(e):
-    # Abrir el DatePicker como un diálogo
         dp_fecha.open = True
         if page is not None:
             page.update()
@@ -128,26 +126,9 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
 
     txt_buscar_paciente.on_change = _filtrar_pacientes
 
-    # --- Detalle factura ---
-    txt_descripcion = ft.TextField(
-        label="Detalle",
-        width=500,
-        multiline=True,
-        min_lines=2,
-        max_lines=4,
-        value="Consulta Psicológica",
-    )
-
-    txt_cantidad = ft.TextField(
-        label="Cantidad",
-        value="1",
-        width=100,
-    )
-    txt_valor_unitario = ft.TextField(
-        label="Valor unitario",
-        width=150,
-        hint_text="Ej: 120000",
-    )
+    # --- Detalle factura (MÚLTIPLES ÍTEMS) ---
+    items_controls = []  # [{"desc": TextField, "cant": TextField, "vu": TextField}]
+    items_column = ft.Column(spacing=8)
 
     dd_iva_porcentaje = ft.Dropdown(
         label="IVA %",
@@ -160,28 +141,16 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
         value="0",
     )
 
-    txt_subtotal = ft.TextField(
-        label="Subtotal",
-        read_only=True,
-        width=150,
-    )
-    txt_iva = ft.TextField(
-        label="IVA",
-        read_only=True,
-        width=150,
-    )
-    txt_total = ft.TextField(
-        label="Total",
-        read_only=True,
-        width=150,
-    )
+    txt_subtotal = ft.TextField(label="Subtotal", read_only=True, width=150)
+    txt_iva = ft.TextField(label="IVA", read_only=True, width=150)
+    txt_total = ft.TextField(label="Total", read_only=True, width=150)
 
     txt_forma_pago = ft.TextField(
         label="Forma de pago",
         value="Transferencia bancaria",
         width=250,
     )
-    
+
     # --- Forma de pago por defecto desde Admin (configuración_facturación) ---
     try:
         cfg_fact = obtener_configuracion_facturacion()
@@ -193,104 +162,84 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
 
     lbl_mensaje = ft.Text("", color=ft.Colors.RED_400)
 
-    # --- Cálculo de totales ---
+    # ================== HELPERS NUMÉRICOS ==================
+    def _parse_float(s: str) -> float:
+        # acepta "1.234" o "1234" o "1,5"
+        return float((s or "0").replace(".", "").replace(",", "."))
 
+    def _fmt_money(v: float) -> str:
+        try:
+            return f"{v:,.0f}".replace(",", ".")
+        except Exception:
+            return str(v)
+
+    # ================== RECÁLCULO TOTALES ==================
     def _recalcular_totales(e=None):
         try:
-            cant = float(txt_cantidad.value or 0)
-            vu = float(
-                (txt_valor_unitario.value or "0")
-                .replace(".", "")
-                .replace(",", ".")
-            )
             porc = float(dd_iva_porcentaje.value or "0")
-        except ValueError:
-            lbl_mensaje.value = "Error en formato numérico de cantidad / valor / IVA."
+            subtotal_val = 0.0
+
+            for it in items_controls:
+                cant = _parse_float(it["cant"].value)
+                vu = _parse_float(it["vu"].value)
+                if cant < 0 or vu < 0:
+                    raise ValueError("negativos")
+                subtotal_val += cant * vu
+
+        except Exception:
+            lbl_mensaje.value = "Error en formato numérico de ítems / IVA."
             page.update()
             return
 
-        if cant < 0 or vu < 0:
-            lbl_mensaje.value = "Cantidad y valor deben ser positivos."
-            page.update()
-            return
+        iva_val = subtotal_val * porc / 100.0
+        total_val = subtotal_val + iva_val
 
-        subtotal = cant * vu
-        iva_val = subtotal * porc / 100.0
-        total = subtotal + iva_val
-
-        txt_subtotal.value = f"{subtotal:,.0f}".replace(",", ".")
-        txt_iva.value = f"{iva_val:,.0f}".replace(",", ".")
-        txt_total.value = f"{total:,.0f}".replace(",", ".")
-
+        txt_subtotal.value = _fmt_money(subtotal_val)
+        txt_iva.value = _fmt_money(iva_val)
+        txt_total.value = _fmt_money(total_val)
         lbl_mensaje.value = ""
         page.update()
 
-    txt_cantidad.on_change = _recalcular_totales
-    txt_valor_unitario.on_change = _recalcular_totales
     dd_iva_porcentaje.on_change = _recalcular_totales
-    _recalcular_totales()
 
+    # ================== AGREGAR ÍTEM ==================
+    def _add_item(desc="Consulta Psicológica", cant="1", vu=""):
+        desc_tf = ft.TextField(label="Descripción", value=desc, width=420)
+        cant_tf = ft.TextField(label="Cant.", value=cant, width=80)
+        vu_tf = ft.TextField(label="V. Unit", value=vu, width=140)
 
-     # --- Prefill cuando venimos desde la agenda (facturar convenio) ---
+        def _remove(_e):
+            items_controls[:] = [x for x in items_controls if x["desc"] != desc_tf]
+            items_column.controls[:] = [r for r in items_column.controls if r.data != desc_tf]
+            _recalcular_totales()
+            page.update()
+
+        del_btn = ft.IconButton(icon=ft.Icons.DELETE, tooltip="Quitar ítem", on_click=_remove)
+
+        row = ft.Row([desc_tf, cant_tf, vu_tf, del_btn], spacing=10, wrap=True)
+        row.data = desc_tf
+
+        cant_tf.on_change = _recalcular_totales
+        vu_tf.on_change = _recalcular_totales
+
+        items_controls.append({"desc": desc_tf, "cant": cant_tf, "vu": vu_tf})
+        items_column.controls.append(row)
+
+    def _ensure_first_item():
+        if not items_controls:
+            _add_item()
+
+    # --- Prefill cuando venimos desde la agenda (facturar convenio) ---
     prefill = None
     try:
         prefill = page.session.get("facturar_desde_agenda")
     except Exception:
-        # Fallback por si session no está disponible
         prefill = getattr(page, "facturar_desde_agenda", None)
 
-    if isinstance(prefill, dict):
-        # 1) Empresa del convenio (buscamos por nombre)
-        nombre_emp = (prefill.get("empresa_nombre") or "").strip()
-        if nombre_emp:
-            for e in empresas_cache:
-                try:
-                    n = (e.get("nombre") or "").strip()
-                except AttributeError:
-                    n = (e["nombre"] or "").strip()
-                if n == nombre_emp:
-                    dd_empresas.value = str(e["id"])
-                    break
-
-        # 2) Paciente
-        txt_paciente_nombre.value = prefill.get("paciente_nombre") or ""
-        txt_paciente_documento.value = prefill.get("paciente_documento") or ""
-
-        # 3) Precio (va al valor unitario)
-        precio = prefill.get("precio")
-        if precio is not None:
-            try:
-                txt_valor_unitario.value = str(int(precio))
-            except Exception:
-                txt_valor_unitario.value = str(precio)
-        else:
-            txt_valor_unitario.value = ""
-
-        # Cantidad fija en 1 cuando viene de agenda
-        txt_cantidad.value = "1"
-
-        # Fecha sugerida (si viene)
-        if prefill.get("fecha"):
-            txt_fecha.value = prefill["fecha"]
-
-        # Descripción por defecto
-        if not (txt_descripcion.value or "").strip():
-            txt_descripcion.value = "Consulta Psicológica"
-
-        # Recalcular totales con los valores precargados
-        _recalcular_totales()
-
-        # Limpiar el flag para que no siga prellenando en futuras visitas
-        try:
-            page.session.remove("facturar_desde_agenda")
-        except Exception:
-            try:
-                delattr(page, "facturar_desde_agenda")
-            except Exception:
-                pass
+    # Estado para edición
+    factura_editando_id: Optional[int] = None
 
     # --- Tabla de facturas existentes ---
-
     facturas_table = ft.DataTable(
         columns=[
             ft.DataColumn(ft.Text("Número")),
@@ -306,7 +255,6 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
     )
 
     def _generar_pdf_desde_ui(factura_id: int):
-        """Llama a generar_pdf_factura con el ID de la factura."""
         try:
             ruta = generar_pdf_factura(factura_id, abrir=True, force=True)
             page.snack_bar = ft.SnackBar(
@@ -323,13 +271,7 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
             page.snack_bar.open = True
             page.update()
 
-
     def _toggle_estado_factura(factura_id: int, estado_actual: str):
-        """
-        Toggle:
-        - pendiente -> pagada
-        - pagada -> pendiente
-        """
         nuevo = "pendiente" if (estado_actual == "pagada") else "pagada"
         try:
             actualizar_estado_factura_convenio(factura_id, nuevo)
@@ -341,15 +283,13 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
             page.snack_bar.open = True
             page.update()
             return
-
         _cargar_facturas()
 
     def _cargar_facturas():
-
         facturas = sorted(
-        listar_facturas_convenio(),
-        key=lambda f: f.get("numero", ""),
-        reverse=True,          # 👉 última factura primero
+            listar_facturas_convenio(),
+            key=lambda f: f.get("numero", ""),
+            reverse=True,
         )
         facturas_table.rows.clear()
 
@@ -373,7 +313,6 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
                 on_click=lambda e, fid=fid: _generar_pdf_desde_ui(fid),
             )
 
-            # Botón para marcar como pagada (deshabilitado si ya está pagada)
             if estado == "pagada":
                 btn_pagada = ft.IconButton(
                     icon=ft.Icons.UNDO,
@@ -399,19 +338,25 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
                 on_click=lambda e, fid=fid, num=numero: _confirmar_borrar(fid, num),
             )
 
-            acciones = ft.Row(
-                controls=[btn_pagada, btn_pdf, btn_edit, btn_del],
-                spacing=4,
-            )
-
+            acciones = ft.Row(controls=[btn_pagada, btn_pdf, btn_edit, btn_del], spacing=4)
 
             facturas_table.rows.append(
                 ft.DataRow(
                     cells=[
                         ft.DataCell(ft.Text(str(numero))),
                         ft.DataCell(ft.Text(fecha_f)),
-                        ft.DataCell(ft.Text(empresa)),
-                        ft.DataCell(ft.Text(paciente)),
+                        ft.DataCell(
+                            ft.Container(
+                                width=240,
+                                content=ft.Text(empresa, no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS),
+                            )
+                        ),
+                        ft.DataCell(
+                            ft.Container(
+                                width=220,
+                                content=ft.Text(paciente, no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS),
+                            )
+                        ),
                         ft.DataCell(ft.Text(total_txt)),
                         ft.DataCell(ft.Text(estado)),
                         ft.DataCell(acciones),
@@ -419,13 +364,19 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
                 )
             )
 
-
         page.update()
 
-    _cargar_facturas()
+    # --- Botón para limpiar paciente ---
+    def _limpiar_paciente(e=None):
+        txt_paciente_documento.value = ""
+        txt_paciente_nombre.value = ""
+        txt_buscar_paciente.value = ""
+        resultados_pacientes.controls.clear()
+        page.update()
+
+    btn_limpiar_paciente = ft.TextButton("Quitar paciente", icon=ft.Icons.CLEAR, on_click=_limpiar_paciente)
 
     # --- Guardar factura en BD ---
-
     def _guardar_factura(e):
         nonlocal factura_editando_id
         lbl_mensaje.value = ""
@@ -435,34 +386,55 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
             page.update()
             return
 
-        if not txt_paciente_nombre.value:
-            lbl_mensaje.value = "Selecciona un paciente."
-            page.update()
-            return
+        # construir items desde UI
+        items = []
+        subtotal_items = 0.0
 
-        if not txt_descripcion.value.strip():
-            lbl_mensaje.value = "Ingresa la descripción del servicio."
+        for it in items_controls:
+            desc = (it["desc"].value or "").strip()
+            if not desc:
+                continue
+
+            try:
+                cant = _parse_float(it["cant"].value)
+                vu = _parse_float(it["vu"].value)
+            except Exception:
+                lbl_mensaje.value = "Error en cantidad / valor unitario de los ítems."
+                page.update()
+                return
+
+            if cant <= 0 or vu < 0:
+                lbl_mensaje.value = "Cantidad debe ser > 0 y valor unitario no negativo."
+                page.update()
+                return
+
+            vt = cant * vu
+            items.append(
+                {
+                    "descripcion": desc,
+                    "cantidad": cant,
+                    "valor_unitario": vu,
+                    "valor_total": vt,
+                }
+            )
+            subtotal_items += vt
+
+        if not items:
+            lbl_mensaje.value = "Agrega al menos un ítem con descripción."
             page.update()
             return
 
         try:
-            cant = float(txt_cantidad.value or 0)
-            vu = float(
-                (txt_valor_unitario.value or "0")
-                .replace(".", "")
-                .replace(",", ".")
-            )
             porc = float(dd_iva_porcentaje.value or "0")
-        except ValueError:
-            lbl_mensaje.value = "Error en formato numérico de cantidad / valor / IVA."
+        except Exception:
+            lbl_mensaje.value = "IVA inválido."
             page.update()
             return
 
-        subtotal = cant * vu
-        iva_val = subtotal * (porc / 100.0)
-        total = subtotal + iva_val
+        iva_val = subtotal_items * (porc / 100.0)
+        total_val = subtotal_items + iva_val
 
-        if total <= 0:
+        if total_val <= 0:
             lbl_mensaje.value = "El total debe ser mayor que 0."
             page.update()
             return
@@ -472,22 +444,13 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
             "empresa_id": int(dd_empresas.value),
             "paciente_documento": txt_paciente_documento.value or None,
             "paciente_nombre": txt_paciente_nombre.value or "",
-            "subtotal": subtotal,
+            "subtotal": subtotal_items,
             "iva": iva_val,
-            "total": total,
+            "total": total_val,
             "total_letras": None,
             "forma_pago": txt_forma_pago.value or None,
             "estado": "pendiente",
         }
-
-        items = [
-            {
-                "descripcion": txt_descripcion.value.strip(),
-                "cantidad": cant,
-                "valor_unitario": vu,
-                "valor_total": subtotal,
-            }
-        ]
 
         try:
             if factura_editando_id is None:
@@ -504,22 +467,20 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
         # Limpiar formulario
         dd_empresas.value = None
         txt_fecha.value = date.today().isoformat()
-        txt_buscar_paciente.value = ""
-        resultados_pacientes.controls.clear()
-        txt_paciente_documento.value = ""
-        txt_paciente_nombre.value = ""
+        _limpiar_paciente()
 
-        txt_descripcion.value = "Consulta Psicológica"
-        txt_cantidad.value = "1"
-        txt_valor_unitario.value = ""
+        # reset items a 1 fila vacía
+        items_controls.clear()
+        items_column.controls.clear()
+        _add_item()
+
         dd_iva_porcentaje.value = "0"
         _recalcular_totales()
-        
+
         factura_editando_id = None
         btn_guardar_factura.text = "Guardar factura de convenio"
         btn_guardar_factura.icon = ft.Icons.SAVE
 
-        # Refrescar los controles visibles
         for c in [
             dd_empresas,
             txt_fecha,
@@ -527,13 +488,11 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
             resultados_pacientes,
             txt_paciente_documento,
             txt_paciente_nombre,
-            txt_descripcion,
-            txt_cantidad,
-            txt_valor_unitario,
             dd_iva_porcentaje,
             txt_subtotal,
             txt_iva,
             txt_total,
+            txt_forma_pago,
         ]:
             if c.page is not None:
                 c.update()
@@ -544,13 +503,138 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
         _cargar_facturas()
         page.update()
 
-    # Estado para edición
-    factura_editando_id = None
-
     btn_guardar_factura = ft.ElevatedButton(
-        "Guardar factura de convenio", icon=ft.Icons.SAVE, on_click=_guardar_factura
+        "Guardar factura de convenio",
+        icon=ft.Icons.SAVE,
+        on_click=_guardar_factura,
     )
 
+    # --------- PREFILL (DESPUÉS de tener controls listos) ----------
+    # _ensure_first_item()  # ya se inicializa al final con 1 ítem
+    if isinstance(prefill, dict):
+        # 1) Empresa (por nombre exacto)
+        nombre_emp = (prefill.get("empresa_nombre") or "").strip()
+        if nombre_emp:
+            for emp in empresas_cache:
+                n = (emp.get("nombre") or "").strip()
+                if n == nombre_emp:
+                    dd_empresas.value = str(emp["id"])
+                    break
+
+        # 2) Paciente (puede venir vacío)
+        txt_paciente_nombre.value = prefill.get("paciente_nombre") or ""
+        txt_paciente_documento.value = prefill.get("paciente_documento") or ""
+
+        # 3) Primer ítem
+        if not items_controls:
+            _add_item()
+        first = items_controls[0]
+    
+        precio = prefill.get("precio")
+        if precio is not None:
+            try:
+                first["vu"].value = str(int(precio))
+            except Exception:
+                first["vu"].value = str(precio)
+        else:
+            first["vu"].value = ""
+
+        first["cant"].value = "1"
+
+        if prefill.get("fecha"):
+            txt_fecha.value = prefill["fecha"]
+
+        # Descripción por defecto si está vacía
+        if not (first["desc"].value or "").strip():
+            first["desc"].value = "Consulta Psicológica"
+
+        _recalcular_totales()
+
+        # Limpiar flag
+        try:
+            page.session.remove("facturar_desde_agenda")
+        except Exception:
+            try:
+                delattr(page, "facturar_desde_agenda")
+            except Exception:
+                pass
+
+    # ===================== CRUD Para Facturas ======================
+    def _editar_factura(fid: int):
+        nonlocal factura_editando_id
+
+        data = obtener_factura_convenio(fid)
+        if not data:
+            page.snack_bar = ft.SnackBar(content=ft.Text("No se encontró la factura."))
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        enc = data["encabezado"]
+        dets = data["detalles"]
+
+        dd_empresas.value = str(enc.get("empresa_id") or "")
+        txt_fecha.value = enc.get("fecha") or date.today().isoformat()
+        txt_paciente_documento.value = enc.get("paciente_documento") or ""
+        txt_paciente_nombre.value = enc.get("paciente_nombre") or ""
+        txt_forma_pago.value = enc.get("forma_pago") or ""
+        dd_iva_porcentaje.value = str(int(enc.get("iva_porcentaje") or 0)) if enc.get("iva_porcentaje") is not None else dd_iva_porcentaje.value
+
+        # cargar ítems
+        items_controls.clear()
+        items_column.controls.clear()
+
+        for d in dets:
+            _add_item(
+                desc=d.get("descripcion") or "",
+                cant=str(d.get("cantidad") or "1"),
+                vu=str(d.get("valor_unitario") or ""),
+            )
+
+        if not dets:
+            _add_item()
+
+        factura_editando_id = fid
+        btn_guardar_factura.text = "Actualizar factura"
+        btn_guardar_factura.icon = ft.Icons.EDIT
+
+        _recalcular_totales()
+        page.update()
+
+    dlg_confirm_borrar = ft.AlertDialog(modal=True)
+
+    def _confirmar_borrar(fid: int, numero: str):
+        def _hacer_borrado(_e):
+            try:
+                eliminar_factura_convenio(fid, borrar_pdf=True)
+            except Exception as ex:
+                page.snack_bar = ft.SnackBar(content=ft.Text(f"Error al borrar: {ex}"))
+                page.snack_bar.open = True
+                page.update()
+                return
+
+            dlg_confirm_borrar.open = False
+            page.update()
+            _cargar_facturas()
+
+        dlg_confirm_borrar.title = ft.Text("Confirmar borrado")
+        dlg_confirm_borrar.content = ft.Text(
+            f"¿Seguro que deseas borrar la factura {numero}? (también se borrará su PDF si existe)"
+        )
+        dlg_confirm_borrar.actions = [
+            ft.TextButton(
+                "Cancelar",
+                on_click=lambda e: setattr(dlg_confirm_borrar, "open", False) or page.update(),
+            ),
+            ft.ElevatedButton("Borrar", icon=ft.Icons.DELETE, on_click=_hacer_borrado),
+        ]
+
+        page.dialog = dlg_confirm_borrar
+        dlg_confirm_borrar.open = True
+        page.open(dlg_confirm_borrar)
+        page.update()
+
+    # ===================== UI CARDS ======================
     card_crear_factura = ft.Card(
         content=ft.Container(
             padding=10,
@@ -568,80 +652,62 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
                             ),
                         ],
                         spacing=10,
-                        wrap=True
+                        wrap=True,
                     ),
                     ft.Divider(),
                     ft.Text("Paciente", weight="bold"),
-                    ft.Row([txt_buscar_paciente], spacing=10),
+                    ft.Row([txt_buscar_paciente, btn_limpiar_paciente], spacing=10, wrap=True),
                     resultados_pacientes,
-                    ft.Row(
-                        [
-                            txt_paciente_documento,
-                            txt_paciente_nombre,
-                        ],
-                        spacing=10,
-                        wrap=True
-                    ),
+                    ft.Row([txt_paciente_documento, txt_paciente_nombre], spacing=10, wrap=True),
                     ft.Divider(),
                     ft.Text("Detalle", weight="bold"),
-                    txt_descripcion,
+                    items_column,
+                    ft.ElevatedButton(
+                        "Agregar ítem",
+                        icon=ft.Icons.ADD,
+                        on_click=lambda e: (_add_item(), _recalcular_totales(), page.update()),
+                    ),
                     ft.Row(
-                        [
-                            txt_cantidad,
-                            txt_valor_unitario,
-                            dd_iva_porcentaje,
-                            txt_subtotal,
-                            txt_iva,
-                            txt_total,
-                        ],
+                        [dd_iva_porcentaje, txt_subtotal, txt_iva, txt_total],
                         spacing=10,
-                        wrap=True
+                        wrap=True,
                     ),
                     ft.Row([txt_forma_pago], spacing=10),
                     lbl_mensaje,
-                    ft.Row(
-                        [btn_guardar_factura],
-                        alignment=ft.MainAxisAlignment.END,
-                    ),
+                    ft.Row([btn_guardar_factura], alignment=ft.MainAxisAlignment.END),
                 ],
                 spacing=10,
-
             ),
         ),
     )
 
-
     card_listado_facturas = ft.Card(
-    content=ft.Container(
-        padding=10,
-        content=ft.Column(
-            [
-                ft.Text("Facturas de convenio", size=18, weight="bold"),
-                ft.Container(
-                    height=260,
-                    content=ft.Row(  # 👈 wrapper horizontal
-                        [
-                            ft.Column(
-                                [facturas_table],
-                                expand=True,
-                                scroll=ft.ScrollMode.AUTO,  # vertical (ya lo tenías)
-                            )
-                        ],
-                        scroll=ft.ScrollMode.AUTO,  # 👈 horizontal
+        content=ft.Container(
+            padding=10,
+            content=ft.Column(
+                [
+                    ft.Text("Facturas de convenio", size=18, weight="bold"),
+                    ft.Container(
+                        height=260,
+                        content=ft.Row(
+                            [
+                                ft.Column(
+                                    [facturas_table],
+                                    expand=True,
+                                    scroll=ft.ScrollMode.AUTO,
+                                )
+                            ],
+                            scroll=ft.ScrollMode.AUTO,
+                        ),
                     ),
-                ),
-            ],
-            spacing=10,
+                ],
+                spacing=10,
+            ),
         ),
-    ),
-)
-
+    )
 
     seccion_creacion = ft.Column(
-        [
-            card_crear_factura,
-            card_listado_facturas,
-        ],
+        [card_crear_factura, card_listado_facturas],
         spacing=15,
         expand=True,
         scroll=ft.ScrollMode.AUTO,
@@ -650,7 +716,6 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
     # ---------------------------------------------------------------------
     # ========== 2. SECCIÓN: INSCRIPCIÓN EMPRESAS CONVENIO ================
     # ---------------------------------------------------------------------
-
     empresas_table = ft.DataTable(
         columns=[
             ft.DataColumn(ft.Text("Nombre")),
@@ -730,10 +795,7 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
         empresas_full = listar_empresas_convenio(activa_only=False)
         empresas_table.rows.clear()
         for emp in empresas_full:
-            btn_editar = ft.TextButton(
-                "Editar",
-                on_click=lambda e, datos=emp: cargar_empresa_en_form(datos),
-            )
+            btn_editar = ft.TextButton("Editar", on_click=lambda e, datos=emp: cargar_empresa_en_form(datos))
             empresas_table.rows.append(
                 ft.DataRow(
                     cells=[
@@ -752,9 +814,7 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
     def guardar_empresa(e):
         nombre = (txt_emp_nombre.value or "").strip()
         if not nombre:
-            page.snack_bar = ft.SnackBar(
-                content=ft.Text("El nombre de la empresa es obligatorio."),
-            )
+            page.snack_bar = ft.SnackBar(content=ft.Text("El nombre de la empresa es obligatorio."))
             page.snack_bar.open = True
             page.update()
             return
@@ -775,19 +835,15 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
         nuevo_id = guardar_empresa_convenio(datos)
         empresa_id_sel["value"] = nuevo_id
 
-        page.snack_bar = ft.SnackBar(
-            content=ft.Text("Empresa guardada correctamente."),
-        )
+        page.snack_bar = ft.SnackBar(content=ft.Text("Empresa guardada correctamente."))
         page.snack_bar.open = True
         page.update()
 
         cargar_empresas_table()
 
-        # También refrescar dropdown de creación de facturas
+        # Refrescar dropdown de creación de facturas
         empresas_new = listar_empresas_convenio()
-        dd_empresas.options = [
-            ft.dropdown.Option(str(e["id"]), e["nombre"]) for e in empresas_new
-        ]
+        dd_empresas.options = [ft.dropdown.Option(str(x["id"]), x["nombre"]) for x in empresas_new]
         if dd_empresas.page is not None:
             dd_empresas.update()
 
@@ -815,13 +871,8 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
                             ft.Row([chk_emp_activa], spacing=10, wrap=True),
                             ft.Row(
                                 [
-                                    ft.TextButton(
-                                        "Nueva empresa",
-                                        on_click=lambda e: limpiar_form_empresa(),
-                                    ),
-                                    ft.ElevatedButton(
-                                        "Guardar", on_click=guardar_empresa
-                                    ),
+                                    ft.TextButton("Nueva empresa", on_click=lambda e: limpiar_form_empresa()),
+                                    ft.ElevatedButton("Guardar", on_click=guardar_empresa),
                                 ],
                                 alignment=ft.MainAxisAlignment.END,
                             ),
@@ -840,7 +891,6 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
                             empresas_table,
                         ],
                         spacing=10,
-                        
                     ),
                 )
             ),
@@ -849,95 +899,10 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
         expand=True,
         scroll=ft.ScrollMode.AUTO,
     )
-    
-    # ---------------------------------------------------------------------
-    # ===================== CRUD Para Facturas ======================
-    # ---------------------------------------------------------------------
-    
-    def _fmt_num(v):
-        try:
-            f = float(v)
-            if f.is_integer():
-                return str(int(f))
-            return str(f)
-        except Exception:
-            return str(v or "")
-    
-    def _editar_factura(fid: int):
-        nonlocal factura_editando_id
-
-        data = obtener_factura_convenio(fid)
-        if not data:
-            page.snack_bar = ft.SnackBar(content=ft.Text("No se encontró la factura."))
-            page.snack_bar.open = True
-            page.update()
-            return
-
-        enc = data["encabezado"]
-        dets = data["detalles"]
-
-        # Cabecera
-        dd_empresas.value = str(enc.get("empresa_id") or "")
-        txt_fecha.value = enc.get("fecha") or date.today().isoformat()
-        txt_paciente_documento.value = enc.get("paciente_documento") or ""
-        txt_paciente_nombre.value = enc.get("paciente_nombre") or ""
-        txt_forma_pago.value = enc.get("forma_pago") or ""
-
-        # Detalle (tu UI hoy maneja 1 ítem, tomamos el primero)
-        if dets:
-            d0 = dets[0]
-            txt_descripcion.value = d0.get("descripcion") or "Consulta Psicológica"
-            txt_cantidad.value = _fmt_num(d0.get("cantidad") or "1")
-            txt_valor_unitario.value = _fmt_num(d0.get("valor_unitario") or "")
-            # IVA: en tu UI lo calculas por %; si quieres ser exacto,
-            # aquí podrías inferir el porcentaje con subtotal/iva, pero lo dejamos en 0 o lo que ya esté.
-            # dd_iva_porcentaje.value = "0"
-
-        _recalcular_totales()
-
-        factura_editando_id = fid
-        btn_guardar_factura.text = "Actualizar factura"
-        btn_guardar_factura.icon = ft.Icons.EDIT
-
-        page.update()
-        
-    dlg_confirm_borrar = ft.AlertDialog(modal=True)
-
-    def _confirmar_borrar(fid: int, numero: str):
-        def _hacer_borrado(e):
-            try:
-                eliminar_factura_convenio(fid, borrar_pdf=True)
-            except Exception as ex:
-                page.snack_bar = ft.SnackBar(content=ft.Text(f"Error al borrar: {ex}"))
-                page.snack_bar.open = True
-                page.update()
-                return
-
-            dlg_confirm_borrar.open = False
-            page.update()
-            _cargar_facturas()
-
-        dlg_confirm_borrar.title = ft.Text("Confirmar borrado")
-        dlg_confirm_borrar.content = ft.Text(
-            f"¿Seguro que deseas borrar la factura {numero}? (también se borrará su PDF si existe)"
-        )
-        dlg_confirm_borrar.actions = [
-            ft.TextButton("Cancelar", on_click=lambda e: setattr(dlg_confirm_borrar, "open", False) or page.update()),
-            ft.ElevatedButton("Borrar", icon=ft.Icons.DELETE, on_click=_hacer_borrado),
-        ]
-
-        page.dialog = dlg_confirm_borrar
-        dlg_confirm_borrar.open = True
-        page.open(dlg_confirm_borrar)
-        page.update()
-
-
-
 
     # ---------------------------------------------------------------------
     # ===================== Menú lateral + contenido ======================
     # ---------------------------------------------------------------------
-
     contenido_derecha = ft.Container(expand=True)
 
     def cambiar_seccion(nueva: str):
@@ -949,7 +914,6 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
 
         tile_creacion.selected = nueva == "creacion"
         tile_empresas.selected = nueva == "empresas"
-        
 
         if contenido_derecha.page is not None:
             contenido_derecha.update()
@@ -971,7 +935,6 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
         on_click=lambda e: cambiar_seccion("empresas"),
     )
 
-
     menu_izquierdo = ft.Container(
         width=230,
         bgcolor=ft.Colors.WHITE,
@@ -989,15 +952,19 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
                 ft.Divider(),
                 tile_creacion,
                 tile_empresas,
-    
             ],
             spacing=5,
         ),
     )
 
     # Inicializaciones
-    cargar_empresas_table()
-    cambiar_seccion("creacion")
+    items_controls.clear()
+    items_column.controls.clear()
+    _add_item()          # 👈 solo una vez
+    _recalcular_totales()
+    _cargar_facturas()
+
+    cambiar_seccion("creacion")  # ✅ esto hace que cargue la vista de creación al entrar
 
     return ft.Row(
         [
@@ -1008,3 +975,5 @@ def build_facturas_view(page: ft.Page) -> ft.Control:
         expand=True,
         vertical_alignment=ft.CrossAxisAlignment.START,
     )
+
+
