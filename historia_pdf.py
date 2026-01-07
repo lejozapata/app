@@ -1,6 +1,7 @@
 import os
 from datetime import datetime, date
 import sqlite3
+from html import unescape
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
@@ -14,6 +15,8 @@ from reportlab.platypus import (
     Image,
     Table,
     TableStyle,
+    ListFlowable, 
+    ListItem,
 )
 from reportlab.lib.enums import TA_LEFT, TA_CENTER
 from reportlab.lib import colors
@@ -88,6 +91,12 @@ SMALL_STYLE = ParagraphStyle(
     spaceAfter=2,
 )
 
+def normalize_newlines(s: str) -> str:
+    s = (s or "").replace("\r\n", "\n").replace("\r", "\n")
+    # 3+ saltos -> 2
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
+
 
 def markdown_to_html(text: str) -> str:
     """
@@ -149,6 +158,144 @@ def _p(
         html = f"<b>{html}</b>"
 
     return Paragraph(html, style)
+
+
+
+# ---------- HTML (Quill) -> ReportLab (solo para sesiones) ----------
+
+def _sanitize_quill_inline(html: str) -> str:
+    s = (html or "").strip()
+    s = s.replace("<br>", "<br/>").replace("<br />", "<br/>").replace("<br/>", "<br/>")
+
+    # quitar spans de quill
+    s = re.sub(r"<span[^>]*>", "", s, flags=re.I)
+    s = re.sub(r"</span\s*>", "", s, flags=re.I)
+
+    # strong/em -> b/i para reportlab
+    s = re.sub(r"</?\s*strong\s*>", lambda m: "</b>" if "/" in m.group(0) else "<b>", s, flags=re.I)
+    s = re.sub(r"</?\s*em\s*>", lambda m: "</i>" if "/" in m.group(0) else "<i>", s, flags=re.I)
+
+    # tachado no soportado bien -> quitar
+    s = re.sub(r"</?\s*(s|strike)\s*>", "", s, flags=re.I)
+
+    # links -> solo texto
+    s = re.sub(r"<a[^>]*>", "", s, flags=re.I)
+    s = re.sub(r"</a\s*>", "", s, flags=re.I)
+
+    # quitar attrs en tags permitidos
+    s = re.sub(r"<(b|i|u)\s+[^>]*>", r"<\1>", s, flags=re.I)
+
+    s = unescape(s).replace("\xa0", " ")
+    return s
+
+
+def quill_html_to_flowables(html: str, normal_style, h1_style, h2_style):
+    """
+    Convierte HTML típico de Quill a flowables para reportlab.
+    Soporta: p/br, b/i/u, h1/h2, ul/li.
+    """
+    html = (html or "").strip()
+    if not html:
+        return []
+
+    out = []
+
+    # 1) Extraer listas para procesarlas como bullets
+    list_blocks = []
+    def _take_list(m):
+        list_blocks.append(m.group(0))
+        return f"[[[LIST_{len(list_blocks)-1}]]]"
+
+    tmp = re.sub(r"<(ul|ol)[^>]*>.*?</\1\s*>", _take_list, html, flags=re.I | re.S)
+    tokens = re.split(r"(\[\[\[LIST_\d+\]\]\])", tmp)
+
+    for part in tokens:
+        part = (part or "").strip()
+        if not part:
+            continue
+
+        # token de lista
+        m = re.match(r"\[\[\[LIST_(\d+)\]\]\]", part)
+        if m:
+            idx = int(m.group(1))
+            lb = list_blocks[idx]
+            items = re.findall(r"<li[^>]*>(.*?)</li\s*>", lb, flags=re.I | re.S)
+
+            bullets = []
+            for it in items:
+                it = _sanitize_quill_inline(it)
+                if it.strip():
+                    bullets.append(ListItem(Paragraph(it, normal_style)))
+
+            if bullets:
+                out.append(ListFlowable(bullets, bulletType="bullet", leftIndent=14))
+                out.append(Spacer(1, 1))
+            continue
+
+        # headings
+        # h1
+        part2 = part
+        while True:
+            hm = re.search(r"<h1[^>]*>(.*?)</h1\s*>", part2, flags=re.I | re.S)
+            if not hm:
+                break
+            before = part2[:hm.start()].strip()
+            inner = hm.group(1).strip()
+            after = part2[hm.end():].strip()
+
+            if before:
+                before = _sanitize_quill_inline(before)
+                before = re.sub(r"</p\s*>", "\n", before, flags=re.I)
+                before = re.sub(r"<p[^>]*>", "", before, flags=re.I)
+                before = before.replace("\n", "<br/>").strip()
+                if before:
+                    out.append(Paragraph(before, normal_style))
+                    out.append(Spacer(1, 2))
+
+            inner = _sanitize_quill_inline(inner)
+            if inner:
+                out.append(Paragraph(f"<b>{inner}</b>", h1_style))
+                out.append(Spacer(1, 2))
+
+            part2 = after
+
+        # h2
+        while True:
+            hm = re.search(r"<h2[^>]*>(.*?)</h2\s*>", part2, flags=re.I | re.S)
+            if not hm:
+                break
+            before = part2[:hm.start()].strip()
+            inner = hm.group(1).strip()
+            after = part2[hm.end():].strip()
+
+            if before:
+                before = _sanitize_quill_inline(before)
+                before = re.sub(r"</p\s*>", "\n", before, flags=re.I)
+                before = re.sub(r"<p[^>]*>", "", before, flags=re.I)
+                before = before.replace("\n", "<br/>").strip()
+                if before:
+                    out.append(Paragraph(before, normal_style))
+                    out.append(Spacer(1, 2))
+
+            inner = _sanitize_quill_inline(inner)
+            if inner:
+                out.append(Paragraph(f"<b>{inner}</b>", h2_style))
+                out.append(Spacer(1, 2))
+
+            part2 = after
+
+        # párrafos restantes
+        part2 = part2.replace("<br/>", "\n")
+        part2 = re.sub(r"</p\s*>", "\n", part2, flags=re.I)
+        part2 = re.sub(r"<p[^>]*>", "", part2, flags=re.I)
+        part2 = _sanitize_quill_inline(part2)
+        part2 = re.sub(r"\n{3,}", "\n", part2).strip()
+
+        if part2:
+            out.append(Paragraph(part2.replace("\n", "<br/>"), normal_style))
+            out.append(Spacer(1, 2))
+
+    return out
 
 
 # ---------- Generación de PDF de historia clínica ----------
@@ -460,9 +607,20 @@ def generar_pdf_historia(
             if titulo:
                 story.append(_p(titulo, NORMAL_STYLE))
 
+            contenido_html = (s.get("contenido_html") or "").strip()
             contenido = (s.get("contenido") or "").strip()
-            if contenido:
-                story.append(_p(contenido, NORMAL_STYLE))
+
+            if contenido_html:
+                story.extend(
+                    quill_html_to_flowables(
+                        contenido_html,
+                        normal_style=NORMAL_STYLE,
+                        h1_style=SECTION_TITLE_STYLE,
+                        h2_style=NORMAL_STYLE,
+                    )
+                )
+            elif contenido:
+                story.append(_p(normalize_newlines(contenido), NORMAL_STYLE))
 
             obs = (s.get("observaciones") or "").strip()
             if obs:

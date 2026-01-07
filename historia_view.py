@@ -1,5 +1,9 @@
 from datetime import date, datetime
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
+import webbrowser
+import subprocess
+import sys
+from pathlib import Path
 
 import flet as ft
 
@@ -7,10 +11,13 @@ import asyncio
 import time
 import re
 import sqlite3
+from html import unescape
+import threading
 
 from .historia_pdf import generar_pdf_historia
 from .markdown_editor import MarkdownEditor
 from .cie11_api import CIE11Client
+from .rich_editor_server import RichEditorServer
 
 from .db import (
     listar_pacientes,
@@ -28,8 +35,83 @@ from .db import (
     agregar_diagnostico_historia,
     eliminar_diagnostico_historia,
     get_connection,
+    DB_PATH,
+    DATA_DIR,
 )
 
+try:
+    import webview  # pywebview
+except Exception:
+    webview = None
+
+# CONEXIÓN SERVER RICH EDITOR
+
+_RICH_SRV: Optional[RichEditorServer] = None
+
+def _get_rich_srv() -> RichEditorServer:
+    global _RICH_SRV
+    if _RICH_SRV is None:
+        _RICH_SRV = RichEditorServer()
+        _RICH_SRV.start()
+    return _RICH_SRV
+
+def _db_get_sesion_html_len(sesion_id: int) -> int:
+    """Devuelve len(contenido_html) o 0 si no existe / vacío."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT length(contenido_html) FROM sesiones_clinicas WHERE id = ? LIMIT 1;", (int(sesion_id),))
+        row = cur.fetchone()
+        conn.close()
+        if not row or row[0] is None:
+            return 0
+        return int(row[0])
+    except Exception:
+        return 0
+    
+def _db_get_sesion_html(sesion_id: int) -> str:
+    import sqlite3
+    from .db import DB_PATH
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT contenido_html FROM sesiones_clinicas WHERE id = ? LIMIT 1;", (int(sesion_id),))
+    row = cur.fetchone()
+    conn.close()
+    return (row[0] if row and row[0] else "") or ""
+    
+    
+def html_to_plain_text(s: str) -> str:
+    s = s or ""
+
+    # saltos típicos de Quill
+    s = s.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n")
+
+    # párrafos
+    s = re.sub(r"</p\s*>", "\n\n", s, flags=re.I)
+    s = re.sub(r"<p[^>]*>", "", s, flags=re.I)
+
+    # listas
+    s = re.sub(r"<li[^>]*>", "• ", s, flags=re.I)
+    s = re.sub(r"</li\s*>", "\n", s, flags=re.I)
+    s = re.sub(r"</?(ul|ol)[^>]*>", "", s, flags=re.I)
+
+    # headings
+    s = re.sub(r"</h[1-6]\s*>", "\n\n", s, flags=re.I)
+    s = re.sub(r"<h[1-6][^>]*>", "", s, flags=re.I)
+
+    # quita el resto de tags
+    s = re.sub(r"<[^>]+>", "", s)
+
+    # entidades HTML
+    s = unescape(s)
+
+    # normaliza espacios/saltos
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    s = re.sub(r"\n{3,}", "\n\n", s).strip()
+
+    return s
+    
+# FIN CONEXIÓN SERVER RICH EDITOR
 
 def build_historia_view(page: ft.Page) -> ft.Control:
     """
@@ -875,19 +957,150 @@ def build_historia_view(page: ft.Page) -> ft.Control:
         label="Modo enriquecido",
         value=False,
     )
+    
+    # NUEVO RICH TEXT
+    
+    def _ensure_sesion_id_for_editor() -> int | None:
+        """
+        Garantiza que exista sesion_editando['id'] para poder abrir el editor enriquecido.
+        Si no existe, crea una sesión borrador (contenido vacío) y devuelve el id.
+        """
+        pac = paciente_actual["value"]
+        if not pac:
+            mensaje_sesion.value = "Debes seleccionar un paciente primero."
+            if mensaje_sesion.page is not None:
+                mensaje_sesion.update()
+            return None
+
+        # Asegurar historia
+        if not historia_actual["id"]:
+            datos_hist = {
+                "id": None,
+                "documento_paciente": pac["documento"],
+                "fecha_apertura": txt_fecha_apertura.value or date.today().isoformat(),
+                "motivo_consulta_inicial": (txt_motivo.value or "").strip() or None,
+                "informacion_adicional": (txt_info_adicional.value or "").strip() or None,
+            }
+            historia_id = guardar_historia_clinica(datos_hist)
+            historia_actual["id"] = historia_id
+
+        # Si ya hay sesión, listo
+        sid = sesion_editando.get("id")
+        if sid:
+            return int(sid)
+
+        # Crear borrador
+        fecha_sesion = txt_fecha_sesion.value or date.today().isoformat()
+
+        datos_sesion = {
+            "id": None,
+            "historia_id": historia_actual["id"],
+            "fecha": fecha_sesion,
+            "titulo": (txt_titulo_sesion.value or "").strip(),
+            "contenido": "",  # ✅ borrador sin contenido
+            "observaciones": (txt_obs_sesion.value or "").strip(),
+            "cita_id": None,
+        }
+
+        nuevo_id = guardar_sesion_clinica(datos_sesion)
+        sesion_editando["id"] = nuevo_id  # ✅ ya existe ID en DB
+
+        # opcional: refresca lista y selección visual
+        cargar_sesiones()
+
+        return int(nuevo_id)
+    
+    lbl_rich_estado = ft.Text("", size=12, color=ft.Colors.GREY_700, italic=True)
+
+    def _refresh_rich_estado():
+        sid = sesion_editando.get("id")
+        if not sid:
+            lbl_rich_estado.value = "Editor enriquecido: crea o selecciona una sesión para habilitar."
+            lbl_rich_estado.update()
+            return
+
+        html = _db_get_sesion_html(int(sid))
+        has_html = (len((html or "").strip()) > 0)
+
+        if has_html:
+            # Preview: HTML -> texto plano
+            preview = html_to_plain_text(html)
+
+            txt_contenido_sesion.value = preview
+            txt_contenido_sesion.read_only = True  # importante para que NO duplique “fuentes”
+            lbl_rich_estado.value = f"Editor enriquecido: ✅ activo (HTML guardado, {len(html)} chars)."
+        else:
+            txt_contenido_sesion.read_only = False
+            lbl_rich_estado.value = "Editor enriquecido: (sin HTML guardado)."
+
+        # refresca UI
+        txt_contenido_sesion.update()
+        lbl_rich_estado.update()
+
+    def _open_webview_window(url: str):
+        if webview is None:
+            webbrowser.open(url, new=1)
+            return
+
+        try:
+            project_root = str(Path(DATA_DIR).parent)  # ✅ <root>
+            subprocess.Popen(
+                [sys.executable, "-m", "app.rich_webview_window", url],
+                cwd=project_root,
+                close_fds=True,
+            )
+        except Exception as ex:
+            print("No se pudo abrir pywebview, fallback a navegador:", ex)
+            webbrowser.open(url, new=1)
+
+    def abrir_editor_enriquecido(e=None):
+        # ✅ Garantiza que exista una sesión (crea borrador si hace falta)
+        sid = _ensure_sesion_id_for_editor()
+        if not sid:
+            return
+
+        srv = _get_rich_srv()
+        pac = paciente_actual["value"]
+        nombre_pac = pac.get("nombre_completo") or pac.get("nombre") or ""
+        doc_pac = pac.get("documento") or ""
+
+        url = srv.editor_url(int(sid), paciente=nombre_pac, documento=doc_pac)
+        _open_webview_window(url)
+
+        page.snack_bar = ft.SnackBar(
+            content=ft.Text("Editor enriquecido abierto. Guarda allá y luego pulsa 'Recargar estado'.")
+        )
+        page.snack_bar.open = True
+        page.update()
+
+    def recargar_estado_editor(e=None):
+        _refresh_rich_estado()
+        page.snack_bar = ft.SnackBar(content=ft.Text("Estado del editor enriquecido actualizado."))
+        page.snack_bar.open = True
+        page.update()
+
+    btn_editor_enriquecido = ft.ElevatedButton(
+        "Editar en editor enriquecido",
+        icon=ft.Icons.EDIT_NOTE,
+        on_click=abrir_editor_enriquecido,
+    )
+
+    btn_recargar_editor = ft.OutlinedButton(
+        "Recargar estado",
+        icon=ft.Icons.REFRESH,
+        on_click=recargar_estado_editor,
+    )
 
     def toggle_markdown_mode(e):
-        if switch_markdown.value:
-            md_editor.set_value(txt_contenido_sesion.value)
-            md_editor.visible = True
-            txt_contenido_sesion.visible = False
-        else:
-            txt_contenido_sesion.value = md_editor.get_value()
+        # Markdown deshabilitado: mantenemos el contenido plano visible siempre
+        switch_markdown.value = False
+        switch_markdown.visible = False
+        if txt_contenido_sesion.page:
             txt_contenido_sesion.visible = True
+            txt_contenido_sesion.update()
+        if md_editor.page:
             md_editor.visible = False
-
-        txt_contenido_sesion.update()
-        md_editor.update()
+            md_editor.update()
 
     switch_markdown.on_change = toggle_markdown_mode
 
@@ -922,6 +1135,7 @@ def build_historia_view(page: ft.Page) -> ft.Control:
         txt_contenido_sesion.visible = True
         md_editor.visible = False
         md_editor.set_value("")
+        _refresh_rich_estado()
         
         switch_vincular_cita.value = False
         dd_citas.visible = False
@@ -1160,6 +1374,8 @@ def build_historia_view(page: ft.Page) -> ft.Control:
         ]:
             if c.page:
                 c.update()
+                
+        _refresh_rich_estado()
 
 
     def eliminar_sesion_click(sesion_id: int):
@@ -1190,24 +1406,30 @@ def build_historia_view(page: ft.Page) -> ft.Control:
 
         fecha_sesion = txt_fecha_sesion.value or date.today().isoformat()
 
-        contenido_texto = (
-            md_editor.get_value() if switch_markdown.value else (txt_contenido_sesion.value or "")
-        ).strip()
-
-        if not contenido_texto:
-            mensaje_sesion.value = "El contenido de la sesión es obligatorio."
-            if mensaje_sesion.page is not None:
-                mensaje_sesion.update()
-            return
-
+        # ✅ SIEMPRE definir cita_id (evita UnboundLocalError)
         cita_id = None
         if switch_vincular_cita.value:
             if not dd_citas.value:
                 mensaje_sesion.value = "Debes seleccionar una cita."
-                mensaje_sesion.update()
+                if mensaje_sesion.page is not None:
+                    mensaje_sesion.update()
                 return
             cita_id = int(dd_citas.value)
-            
+
+        contenido_texto = (txt_contenido_sesion.value or "").strip()
+
+        # ✅ Permitir guardar si hay HTML en editor enriquecido aunque el texto plano esté vacío
+        if not contenido_texto:
+            sid = sesion_editando.get("id")
+            if sid and _db_get_sesion_html_len(int(sid)) > 0:
+                # OK: hay HTML guardado en el editor enriquecido
+                pass
+            else:
+                mensaje_sesion.value = "El contenido es obligatorio (o guarda el texto en el editor enriquecido)."
+                if mensaje_sesion.page is not None:
+                    mensaje_sesion.update()
+                return
+
         # ✅ Evitar duplicar: una cita solo puede tener 1 sesión clínica
         if cita_id is not None:
             if existe_sesion_para_cita(cita_id, excluir_sesion_id=sesion_editando["id"]):
@@ -1234,6 +1456,7 @@ def build_historia_view(page: ft.Page) -> ft.Control:
 
         limpiar_form_sesion()
         cargar_sesiones()
+
 
     btn_guardar_sesion = ft.ElevatedButton(
         "Guardar sesión",
@@ -1341,9 +1564,17 @@ def build_historia_view(page: ft.Page) -> ft.Control:
 
             # Resto del formulario
             txt_titulo_sesion,
-            switch_markdown,
+
+            # --- editor enriquecido (nuevo) ---
+            ft.Row([btn_editor_enriquecido, btn_recargar_editor], spacing=10, wrap=True),
+            lbl_rich_estado,
+
+            # --- contenido plano (fallback) ---
             txt_contenido_sesion,
+
+            # md_editor se mantiene “vivo” pero oculto (por compatibilidad)
             md_editor,
+
             txt_obs_sesion,
             mensaje_sesion,
 

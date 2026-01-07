@@ -416,6 +416,12 @@ def init_db() -> None:
         ON sesiones_clinicas(cita_id)
         WHERE cita_id IS NOT NULL;
     """)
+    
+    # --- Migración segura: HTML enriquecido en sesiones clínicas ---
+    cur.execute("PRAGMA table_info(sesiones_clinicas);")
+    cols = [row[1] for row in cur.fetchall()]
+    if "contenido_html" not in cols:
+        cur.execute("ALTER TABLE sesiones_clinicas ADD COLUMN contenido_html TEXT;")
 
     # Tabla de paquetes de arriendo de consultorio
     cur.execute(
