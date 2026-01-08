@@ -91,6 +91,16 @@ SMALL_STYLE = ParagraphStyle(
     spaceAfter=2,
 )
 
+SIGN_STYLE = ParagraphStyle(
+    name="Sign",
+    fontName="Helvetica-Oblique",
+    fontSize=7,
+    leading=12,
+    alignment=TA_LEFT,
+    textColor=colors.HexColor("#555555"),
+    spaceBefore=6,
+)
+
 def normalize_newlines(s: str) -> str:
     s = (s or "").replace("\r\n", "\n").replace("\r", "\n")
     # 3+ saltos -> 2
@@ -538,7 +548,6 @@ def generar_pdf_historia(
     story.append(Spacer(1, 8))
 
     # ==========================================================
-    # ==========================================================
     # SESIONES CLÍNICAS
     # ==========================================================
 
@@ -568,7 +577,10 @@ def generar_pdf_historia(
                 conn.row_factory = sqlite3.Row
                 cur = conn.cursor()
                 qmarks = ",".join(["?"] * len(cita_ids))
-                cur.execute(f"SELECT id, fecha_hora FROM citas WHERE id IN ({qmarks});", tuple(cita_ids))
+                cur.execute(
+                    f"SELECT id, fecha_hora FROM citas WHERE id IN ({qmarks});",
+                    tuple(cita_ids),
+                )
                 for r in cur.fetchall():
                     try:
                         cita_hora_map[int(r["id"])] = r["fecha_hora"]
@@ -581,7 +593,7 @@ def generar_pdf_historia(
         for idx, s in enumerate(sesiones, start=1):
             s = dict(s) if not isinstance(s, dict) else s
 
-            # Fecha a mostrar:
+            # Fecha a mostrar (y a usar en firma):
             # - Si hay cita_id => usar citas.fecha_hora (con hora real)
             # - Si NO hay cita_id => usar sesiones_clinicas.fecha (solo fecha)
             fecha_txt = (s.get("fecha") or "").strip()
@@ -627,17 +639,38 @@ def generar_pdf_historia(
                 story.append(Spacer(1, 2))
                 story.append(_p(obs, SMALL_STYLE))
 
+            # ----------------------------------------------------------
+            # FIRMA ELECTRÓNICA DE LA SESIÓN (SOLO EN PDF)
+            # ----------------------------------------------------------
+            fecha_firma = (s.get("fecha_registro") or "").strip()
+            if not fecha_firma:
+                fecha_firma = (fecha_txt or "").strip()
+
+            firma_txt = (
+                "Firmado electrónicamente por: "
+                "<b>Sara Milena Hernández Ramírez</b> – "
+                "Especialista en Psicología Clínica y Salud Mental – "
+                "Reg. Prof. 5243019 – "
+                f"{fecha_firma[:16]}"
+            )
             story.append(Spacer(1, 4))
+            story.append(Paragraph(firma_txt, SIGN_STYLE))
+            story.append(Spacer(1, 6))
+
+            # Línea divisoria entre sesiones
             story.append(
                 Table(
                     [[""]],
                     colWidths=[170 * mm],
                     style=TableStyle(
-                        [("LINEBELOW", (0, 0), (-1, -1), 0.4, colors.HexColor("#E0E0E0"))]
+                        [("LINEBELOW", (0, 0), (-1, -1), 0.4, colors.HexColor("#DDDDDD"))]
                     ),
                 )
             )
-            story.append(Spacer(1, 4))
+            story.append(Spacer(1, 10))
+
+            
+            
 
     doc.build(story)
 

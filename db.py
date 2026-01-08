@@ -77,6 +77,8 @@ def init_db() -> None:
     """Crea las tablas necesarias si no existen."""
     conn = get_connection()
     cur = conn.cursor()
+    
+    
 
     #######################TABLAS ########################
     # Tabla de pacientes
@@ -422,6 +424,19 @@ def init_db() -> None:
     cols = [row[1] for row in cur.fetchall()]
     if "contenido_html" not in cols:
         cur.execute("ALTER TABLE sesiones_clinicas ADD COLUMN contenido_html TEXT;")
+        
+    # --- Migración segura: timestamp de registro (firma legal) ---
+    cur.execute("PRAGMA table_info(sesiones_clinicas);")
+    cols = [row[1] for row in cur.fetchall()]
+    if "fecha_registro" not in cols:
+        cur.execute("ALTER TABLE sesiones_clinicas ADD COLUMN fecha_registro TEXT;")
+
+    # Backfill: si ya existían sesiones, deja un registro mínimo (sin hora real)
+    cur.execute("""
+        UPDATE sesiones_clinicas
+        SET fecha_registro = COALESCE(NULLIF(trim(fecha_registro), ''), substr(fecha, 1, 10) || ' 00:00:00')
+        WHERE fecha_registro IS NULL OR trim(fecha_registro) = '';
+    """)
 
     # Tabla de paquetes de arriendo de consultorio
     cur.execute(
@@ -1007,18 +1022,17 @@ def _normalizar_cita_id(valor: Any) -> Optional[int]:
         return None
 
 
+def _now_ts() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
 def guardar_sesion_clinica(datos: Dict[str, Any]) -> int:
     """
     Crea o actualiza una sesión clínica.
 
-    Espera:
-      - id (opcional)
-      - historia_id
-      - fecha (YYYY-MM-DD)
-      - titulo
-      - contenido
-      - observaciones
-      - cita_id (opcional)  -> FK a citas(id)
+    NUEVO:
+      - fecha_registro: timestamp de creación (cuando se registró la sesión)
+        * En INSERT se asigna automáticamente.
+        * En UPDATE NO se modifica (se conserva el registro original).
     """
     conn = get_connection()
     cur = conn.cursor()
@@ -1033,7 +1047,6 @@ def guardar_sesion_clinica(datos: Dict[str, Any]) -> int:
     cita_id = _normalizar_cita_id(datos.get("cita_id"))
 
     # --- Validación opcional: 1 cita -> 1 sesión clínica ---
-    # Si tu DB ya tiene UNIQUE parcial, esto igual ayuda a dar un error más amigable.
     if cita_id is not None:
         if sesion_id:
             cur.execute(
@@ -1048,9 +1061,13 @@ def guardar_sesion_clinica(datos: Dict[str, Any]) -> int:
         dup = cur.fetchone()
         if dup:
             conn.close()
-            raise ValueError(f"Esta cita (id={cita_id}) ya está vinculada a otra sesión clínica (sesión id={dup['id'] if isinstance(dup, sqlite3.Row) else dup[0]}).")
+            dup_id = dup["id"] if isinstance(dup, sqlite3.Row) else dup[0]
+            raise ValueError(
+                f"Esta cita (id={cita_id}) ya está vinculada a otra sesión clínica (sesión id={dup_id})."
+            )
 
     if sesion_id:
+        # UPDATE: NO tocar fecha_registro (se conserva)
         cur.execute(
             """
             UPDATE sesiones_clinicas
@@ -1066,7 +1083,19 @@ def guardar_sesion_clinica(datos: Dict[str, Any]) -> int:
                 sesion_id,
             ),
         )
+
+        # Blindaje: si quedó vacío por migraciones viejas, lo setea una sola vez
+        cur.execute(
+            """
+            UPDATE sesiones_clinicas
+            SET fecha_registro = COALESCE(NULLIF(trim(fecha_registro), ''), ?)
+            WHERE id = ?;
+            """,
+            (_now_ts(), sesion_id),
+        )
+
     else:
+        # INSERT: asignar fecha_registro = NOW
         cur.execute(
             """
             INSERT INTO sesiones_clinicas (
@@ -1075,8 +1104,9 @@ def guardar_sesion_clinica(datos: Dict[str, Any]) -> int:
                 titulo,
                 contenido,
                 observaciones,
-                cita_id
-            ) VALUES (?, ?, ?, ?, ?, ?);
+                cita_id,
+                fecha_registro
+            ) VALUES (?, ?, ?, ?, ?, ?, ?);
             """,
             (
                 historia_id,
@@ -1085,6 +1115,7 @@ def guardar_sesion_clinica(datos: Dict[str, Any]) -> int:
                 contenido,
                 observaciones,
                 cita_id,
+                _now_ts(),
             ),
         )
         sesion_id = cur.lastrowid
@@ -1092,7 +1123,6 @@ def guardar_sesion_clinica(datos: Dict[str, Any]) -> int:
     conn.commit()
     conn.close()
     return int(sesion_id)
-
 
 def eliminar_sesion_clinica(sesion_id: int) -> None:
     """Elimina una sesión clínica por id."""
