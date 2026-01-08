@@ -1,3 +1,4 @@
+# app/main.py
 import flet as ft
 from pathlib import Path
 from .db import init_db
@@ -143,11 +144,4 @@ def main(page: ft.Page):
             expand=True,
         )
     )
-
-
-# if __name__ == "__main__":
-#     ft.app(
-#         target=main,
-#         assets_dir="../data",
-#         view=ft.AppView.FLET_APP,  # escritorio
-#     )
+    

@@ -1037,21 +1037,58 @@ def build_historia_view(page: ft.Page) -> ft.Control:
         txt_contenido_sesion.update()
         lbl_rich_estado.update()
 
+
+    import os, sys, subprocess
+    from pathlib import Path
+
+    import os, sys, subprocess
+    from pathlib import Path
+
     def _open_webview_window(url: str):
-        if webview is None:
-            webbrowser.open(url, new=1)
+        import os, subprocess
+        from pathlib import Path
+
+        def find_edge_exe() -> str | None:
+            candidates = [
+                Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+                Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+                Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+            ]
+            for p in candidates:
+                if p.exists():
+                    return str(p)
+            return None
+
+        edge = find_edge_exe()
+        if not edge:
+            # fallback: abre en navegador por defecto
+            import webbrowser
+            webbrowser.open(url)
             return
 
-        try:
-            project_root = str(Path(DATA_DIR).parent)  # ✅ <root>
-            subprocess.Popen(
-                [sys.executable, "-m", "app.rich_webview_window", url],
-                cwd=project_root,
-                close_fds=True,
-            )
-        except Exception as ex:
-            print("No se pudo abrir pywebview, fallback a navegador:", ex)
-            webbrowser.open(url, new=1)
+        # Perfil aislado para esta ventana (evita conflictos/caché/locks)
+        base = Path(os.environ.get("APPDATA", "")) / "Luffyto Software" / "SaraPsicologa"
+        profile = base / "edge_profile_rich"
+        profile.mkdir(parents=True, exist_ok=True)
+
+        # Ventana “app” sin barra de direcciones
+        args = [
+            edge,
+            f"--app={url}",
+            f"--user-data-dir={str(profile)}",
+            "--no-first-run",
+            "--disable-features=TranslateUI",
+            "--disable-sync",
+            "--autoplay-policy=no-user-gesture-required",
+            "--window-size=1100,780",
+        ]
+
+        creationflags = 0
+        if hasattr(subprocess, "CREATE_NO_WINDOW"):
+            creationflags = subprocess.CREATE_NO_WINDOW
+
+        subprocess.Popen(args, creationflags=creationflags)
+
 
     def abrir_editor_enriquecido(e=None):
         # ✅ Garantiza que exista una sesión (crea borrador si hace falta)

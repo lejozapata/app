@@ -16,6 +16,52 @@ import urllib.parse
 import urllib.request
 import os
 
+
+#DEBUG
+import sys
+from pathlib import Path
+
+LOG = Path.home() / "AppData" / "Roaming" / "Luffyto Software" / "SaraPsicologa" / "flet" / "app" / "webview_debug.log"
+
+def _log(s: str):
+    try:
+        LOG.write_text((LOG.read_text(encoding="utf-8") if LOG.exists() else "") + s + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+def main():
+    _log("webview_main START argv=" + repr(sys.argv))
+
+    url = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:63480/health"
+    _log("url=" + url)
+
+    try:
+        import webview
+        _log("pywebview import OK")
+    except Exception as e:
+        _log("pywebview import FAILED: " + repr(e))
+        return 2
+
+    try:
+        webview.create_window("Editor enriquecido - SaraPsicologa", url, width=1100, height=780, resizable=True)
+        _log("create_window OK")
+    except Exception as e:
+        _log("create_window FAILED: " + repr(e))
+        return 3
+
+    try:
+        webview.start(gui="edgechromium")
+        _log("webview.start returned")
+    except Exception as e:
+        _log("webview.start FAILED: " + repr(e))
+        return 4
+
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+#DEBUG EXIT
+
 # OJO: importa desde tu db.py real
 from .db import get_connection, init_db, DATA_DIR, DB_PATH
 
