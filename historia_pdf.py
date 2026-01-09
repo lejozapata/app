@@ -650,7 +650,7 @@ def generar_pdf_historia(
                 "Firmado electrónicamente por: "
                 "<b>Sara Milena Hernández Ramírez</b> – "
                 "Especialista en Psicología Clínica y Salud Mental – "
-                "Reg. Prof. 5243019 – "
+                "TP. 180733 – "
                 f"{fecha_firma[:16]}"
             )
             story.append(Spacer(1, 4))
